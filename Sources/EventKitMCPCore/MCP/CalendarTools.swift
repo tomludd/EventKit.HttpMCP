@@ -22,7 +22,7 @@ public enum CalendarTools {
         - Calendar arguments accept a calendar id, a title, or "Title (Account)" from list_calendars.
         - Sync rules mirror busy time from a source calendar into a target calendar: `block` mode creates anonymous \
         "Busy" events (Out of Office is kept), `copy` mode copies title and notes as Free. Sync-created events carry an \
-        [eventkit-sync:…] marker in their notes and are never synced again. Rules run automatically at minutes 12, 27, 42 and 57.
+        [eventkit-sync:…] marker in their notes and are never synced again. Event list/search tools hide them unless `include_synced` is true. Rules run automatically at minutes 12, 27, 42 and 57.
         """
     }
 
@@ -91,7 +91,7 @@ public enum CalendarTools {
                 "query": string("Only events whose title, location or notes contain this text (case-insensitive)."),
                 "include_notes": boolean("Include event notes/description. Default false."),
                 "include_all_day": boolean("Include all-day events. Default true."),
-                "exclude_synced": boolean("Hide events created by sync rules. Default false."),
+                "include_synced": boolean("Include blocking/copied events created by sync rules. Default false."),
                 "limit": integer("Maximum events to return. Default 200."),
             ]),
             readOnly: true
@@ -112,6 +112,7 @@ public enum CalendarTools {
                 "to": string("Range end. Default: 180 days ahead."),
                 "calendars": stringArray("Calendar ids or names to search. Default: all calendars."),
                 "include_notes": boolean("Include event notes in the result. Default false."),
+                "include_synced": boolean("Include blocking/copied events created by sync rules. Default false."),
                 "limit": integer("Maximum events to return. Default 50."),
             ], required: ["query"]),
             readOnly: true
@@ -127,13 +128,14 @@ public enum CalendarTools {
         server.register(MCPTool(
             name: "upcoming_events",
             title: "Upcoming events",
-            description: "Ongoing and upcoming events from now, with minutesUntilStart and join links. Skips all-day, declined, canceled and sync-created events by default.",
+            description: "Ongoing and upcoming events from now, with minutesUntilStart and join links. Skips all-day, declined, canceled and sync-created (blocking/copied) events by default.",
             inputSchema: schema([
                 "days": integer("How many days ahead to look. Default 7."),
                 "limit": integer("Maximum events to return. Default 10."),
                 "calendars": stringArray("Calendar ids or names. Default: all calendars."),
                 "include_all_day": boolean("Include all-day events. Default false."),
                 "include_declined": boolean("Include declined and canceled events. Default false."),
+                "include_synced": boolean("Include blocking/copied events created by sync rules. Default false."),
             ]),
             readOnly: true
         ) { args in
@@ -142,10 +144,11 @@ public enum CalendarTools {
             let limit = max(1, try args.int("limit") ?? 10)
             let includeAllDay = try args.bool("include_all_day") ?? false
             let includeDeclined = try args.bool("include_declined") ?? false
+            let includeSynced = try args.bool("include_synced") ?? false
             let to = now.addingTimeInterval(TimeInterval(days * 86400))
             let events = try store.events(from: now, to: to, calendars: args.stringArray("calendars"), includeNotes: false, now: now)
                 .filter { includeAllDay || !$0.allDay }
-                .filter { $0.synced != true }
+                .filter { includeSynced || $0.synced != true }
                 .filter { includeDeclined || ($0.myStatus != "declined" && $0.status != "canceled") }
             return EventList(
                 from: DateInput.format(now),
@@ -210,7 +213,7 @@ public enum CalendarTools {
         let query = args.string("query")
         let includeNotes = try args.bool("include_notes") ?? false
         let includeAllDay = try args.bool("include_all_day") ?? true
-        let excludeSynced = try args.bool("exclude_synced") ?? false
+        let includeSynced = try args.bool("include_synced") ?? false
         let limit = max(1, try args.int("limit") ?? defaultLimit)
 
         var events = try store.events(
@@ -222,7 +225,7 @@ public enum CalendarTools {
             }
         }
         if !includeAllDay { events = events.filter { !$0.allDay } }
-        if excludeSynced { events = events.filter { $0.synced != true } }
+        if !includeSynced { events = events.filter { $0.synced != true } }
         if !includeNotes { events = events.map { var event = $0; event.notes = nil; return event } }
 
         return EventList(
