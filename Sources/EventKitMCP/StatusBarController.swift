@@ -145,9 +145,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.addItem(disabled(syncStatusText(), symbol: nil, small: true))
 
         menu.addItem(.separator())
-        menu.addItem(disabled("MCP server: \(model.serverStatusText)", symbol: "server.rack", small: false))
-        menu.addItem(item("Copy MCP URL", #selector(copyURL), symbol: "link"))
-        menu.addItem(item("Copy Claude Code Command", #selector(copyClaudeCommand), symbol: "terminal"))
+        let serverRunning: Bool
+        if case .running = model.serverStatus { serverRunning = true } else { serverRunning = false }
+        menu.addItem(disabled("MCP server: \(serverRunning ? "Running" : "Not running")", symbol: "server.rack", small: false))
 
         menu.addItem(.separator())
         menu.addItem(item("Settings…", #selector(showSettings), key: ",", symbol: "gearshape"))
@@ -247,14 +247,6 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         model.syncNow()
     }
 
-    @objc private func copyURL() {
-        copy(model.endpointURL)
-    }
-
-    @objc private func copyClaudeCommand() {
-        copy(model.claudeCommand)
-    }
-
     @objc private func showSettings() {
         openSettings()
     }
@@ -269,11 +261,6 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     // MARK: - Helpers
-
-    private func copy(_ text: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-    }
 
     private func item(_ title: String, _ action: Selector, key: String = "", symbol: String?) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
