@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>EventKit MCP</string>
+	<key>CFBundleExecutable</key>
+	<string>EventKitMCP</string>
+	<key>CFBundleIdentifier</key>
+	<string>local.eventkit.httpmcp</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>EventKit MCP</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>EventKit MCP reads and edits your calendars for MCP clients on this Mac, shows a countdown to your next meeting and syncs busy time between calendars.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>EventKit MCP reads and edits your calendars for MCP clients on this Mac, shows a countdown to your next meeting and syncs busy time between calendars.</string>
+</dict>
+</plist>
