@@ -4,11 +4,15 @@ import Foundation
 public enum CalendarTools {
     static let dateHelp = "ISO 8601 (2026-10-15T09:00:00+02:00), 'YYYY-MM-DD HH:mm' or 'YYYY-MM-DD' in local time, or today/tomorrow/yesterday/now"
 
+    /// Calendar ids MCP clients may use (nil = all), read on every call so Settings changes apply at once.
+    typealias Scope = () -> Set<String>?
+
     public static func register(on server: MCPServer, store: EventKitCalendarStore, sync: SyncCoordinator, config: ConfigStore) {
-        registerTimeAndCalendars(server, store)
-        registerEventQueries(server, store)
-        registerEventEditing(server, store)
-        registerSync(server, store, sync, config)
+        let scope: Scope = { config.config.mcpCalendarScope }
+        registerTimeAndCalendars(server, store, scope)
+        registerEventQueries(server, store, scope)
+        registerEventEditing(server, store, scope)
+        registerSync(server, store, sync, config, scope)
     }
 
     public static func instructions() -> String {
@@ -19,7 +23,8 @@ public enum CalendarTools {
         (iCloud, Exchange/Microsoft 365, Google, CalDAV, local). Local time zone: \(tz.identifier) (UTC\(offset)).
         - Date/time arguments accept ISO 8601; values without an offset are local time. A date-only `to` covers that whole day.
         - Call get_current_time if you need today's date. Event ids are opaque; pass them back unchanged.
-        - Calendar arguments accept a calendar id, a title, or "Title (Account)" from list_calendars.
+        - Calendar arguments accept a calendar id, a title, or "Title (Account)" from list_calendars. Only calendars \
+        the user has enabled for MCP in EventKit MCP Settings are visible.
         - Sync rules mirror busy time from a source calendar into a target calendar: `block` mode creates anonymous \
         "Busy" events (Out of Office is kept), `copy` mode copies title and notes as Free. Sync-created events carry an \
         [eventkit-sync:…] marker in their notes and are never synced again. Event list/search tools hide them unless `include_synced` is true. Rules run automatically at minutes 12, 27, 42 and 57.
@@ -36,7 +41,7 @@ public enum CalendarTools {
         let utcOffset: String
     }
 
-    private static func registerTimeAndCalendars(_ server: MCPServer, _ store: EventKitCalendarStore) {
+    private static func registerTimeAndCalendars(_ server: MCPServer, _ store: EventKitCalendarStore, _ scope: @escaping Scope) {
         server.register(MCPTool(
             name: "get_current_time",
             title: "Current time",
@@ -61,11 +66,11 @@ public enum CalendarTools {
         server.register(MCPTool(
             name: "list_calendars",
             title: "List calendars",
-            description: "Lists all calendars with id, title, account, type, color and whether they are writable.",
+            description: "Lists the calendars available to MCP with id, title, account, type, color and whether they are writable.",
             inputSchema: schema([:]),
             readOnly: true
         ) { _ in
-            try store.calendars()
+            try store.calendars(allowed: scope())
         })
     }
 
@@ -79,7 +84,7 @@ public enum CalendarTools {
         let events: [EventInfo]
     }
 
-    private static func registerEventQueries(_ server: MCPServer, _ store: EventKitCalendarStore) {
+    private static func registerEventQueries(_ server: MCPServer, _ store: EventKitCalendarStore, _ scope: @escaping Scope) {
         server.register(MCPTool(
             name: "list_events",
             title: "List events",
@@ -99,7 +104,7 @@ public enum CalendarTools {
             let now = Date()
             let from = try args.date("from", now: now) ?? Calendar.current.startOfDay(for: now)
             let to = try args.date("to", endOfDayIfDateOnly: true, now: now) ?? endOfDay(from)
-            return try listEvents(store, args, from: from, to: to, defaultLimit: 200, now: now)
+            return try listEvents(store, args, from: from, to: to, defaultLimit: 200, now: now, allowed: scope())
         })
 
         server.register(MCPTool(
@@ -122,7 +127,7 @@ public enum CalendarTools {
             let today = Calendar.current.startOfDay(for: now)
             let from = try args.date("from", now: now) ?? Calendar.current.date(byAdding: .day, value: -30, to: today)!
             let to = try args.date("to", endOfDayIfDateOnly: true, now: now) ?? Calendar.current.date(byAdding: .day, value: 181, to: today)!
-            return try listEvents(store, args, from: from, to: to, defaultLimit: 50, now: now)
+            return try listEvents(store, args, from: from, to: to, defaultLimit: 50, now: now, allowed: scope())
         })
 
         server.register(MCPTool(
@@ -146,7 +151,7 @@ public enum CalendarTools {
             let includeDeclined = try args.bool("include_declined") ?? false
             let includeSynced = try args.bool("include_synced") ?? false
             let to = now.addingTimeInterval(TimeInterval(days * 86400))
-            let events = try store.events(from: now, to: to, calendars: args.stringArray("calendars"), includeNotes: false, now: now)
+            let events = try store.events(from: now, to: to, calendars: args.stringArray("calendars"), includeNotes: false, now: now, allowed: scope())
                 .filter { includeAllDay || !$0.allDay }
                 .filter { includeSynced || $0.synced != true }
                 .filter { includeDeclined || ($0.myStatus != "declined" && $0.status != "canceled") }
@@ -166,7 +171,7 @@ public enum CalendarTools {
             inputSchema: schema(["id": string("Event id from a list/search result.")], required: ["id"]),
             readOnly: true
         ) { args in
-            try store.event(id: args.requiredString("id"))
+            try store.event(id: args.requiredString("id"), allowed: scope())
         })
 
         server.register(MCPTool(
@@ -191,7 +196,7 @@ public enum CalendarTools {
             let duration = max(5, try args.int("duration_minutes") ?? 30)
             let workStart = min(max(try args.int("work_start_hour") ?? 9, 0), 23)
             let workEnd = min(max(try args.int("work_end_hour") ?? 17, workStart + 1), 24)
-            let busy = try store.busyIntervals(from: from, to: to, calendars: args.stringArray("calendars"))
+            let busy = try store.busyIntervals(from: from, to: to, calendars: args.stringArray("calendars"), allowed: scope())
             let slots = FreeSlotFinder.find(
                 busy: busy, from: from, to: to, durationMinutes: duration, workStartHour: workStart,
                 workEndHour: workEnd, includeWeekends: try args.bool("include_weekends") ?? false, now: now
@@ -208,7 +213,7 @@ public enum CalendarTools {
     }
 
     private static func listEvents(
-        _ store: EventKitCalendarStore, _ args: ToolArguments, from: Date, to: Date, defaultLimit: Int, now: Date
+        _ store: EventKitCalendarStore, _ args: ToolArguments, from: Date, to: Date, defaultLimit: Int, now: Date, allowed: Set<String>?
     ) throws -> EventList {
         let query = args.string("query")
         let includeNotes = try args.bool("include_notes") ?? false
@@ -217,7 +222,7 @@ public enum CalendarTools {
         let limit = max(1, try args.int("limit") ?? defaultLimit)
 
         var events = try store.events(
-            from: from, to: to, calendars: args.stringArray("calendars"), includeNotes: includeNotes || query != nil, now: now
+            from: from, to: to, calendars: args.stringArray("calendars"), includeNotes: includeNotes || query != nil, now: now, allowed: allowed
         )
         if let query {
             events = events.filter { event in
@@ -244,7 +249,7 @@ public enum CalendarTools {
         let span: String
     }
 
-    private static func registerEventEditing(_ server: MCPServer, _ store: EventKitCalendarStore) {
+    private static func registerEventEditing(_ server: MCPServer, _ store: EventKitCalendarStore, _ scope: @escaping Scope) {
         let availabilityProperty = enumString(["busy", "free", "tentative", "unavailable"], "Free/busy status. `unavailable` = Out of Office.")
         let alertsProperty: JSONValue = [
             "type": "array",
@@ -309,7 +314,7 @@ public enum CalendarTools {
             changes.availability = try availability(args)
             changes.alertMinutesBefore = try args.intArray("alerts")
             changes.recurrence = try recurrence(args)
-            return try store.createEvent(changes)
+            return try store.createEvent(changes, allowed: scope())
         })
 
         server.register(MCPTool(
@@ -349,7 +354,7 @@ public enum CalendarTools {
             changes.availability = try availability(args)
             changes.alertMinutesBefore = try args.intArray("alerts")
             changes.recurrence = try recurrence(args)
-            return try store.updateEvent(id: args.requiredString("id"), changes: changes, futureEvents: try span(args))
+            return try store.updateEvent(id: args.requiredString("id"), changes: changes, futureEvents: try span(args), allowed: scope())
         })
 
         server.register(MCPTool(
@@ -361,7 +366,7 @@ public enum CalendarTools {
             destructive: true
         ) { args in
             let future = try span(args)
-            let deleted = try store.deleteEvent(id: args.requiredString("id"), futureEvents: future)
+            let deleted = try store.deleteEvent(id: args.requiredString("id"), futureEvents: future, allowed: scope())
             return DeleteResult(deleted: deleted, span: future ? "future" : "this")
         })
     }
@@ -441,7 +446,9 @@ public enum CalendarTools {
         let purgedEvents: Int?
     }
 
-    private static func registerSync(_ server: MCPServer, _ store: EventKitCalendarStore, _ sync: SyncCoordinator, _ config: ConfigStore) {
+    private static func registerSync(
+        _ server: MCPServer, _ store: EventKitCalendarStore, _ sync: SyncCoordinator, _ config: ConfigStore, _ scope: @escaping Scope
+    ) {
         func ruleInfo(_ rule: SyncRule) -> RuleInfo {
             RuleInfo(
                 id: rule.id.uuidString,
@@ -459,8 +466,28 @@ public enum CalendarTools {
             )
         }
 
+        func isVisible(_ rule: SyncRule, _ allowed: Set<String>?) -> Bool {
+            guard let allowed else { return true }
+            return allowed.contains(rule.sourceCalendarId) && allowed.contains(rule.targetCalendarId)
+        }
+
+        /// MCP clients only see rules whose source and target calendars are both available to MCP.
+        func visibleRules() -> [SyncRule] {
+            let allowed = scope()
+            return config.config.syncRules.filter { isVisible($0, allowed) }
+        }
+
+        /// The sync log without entries for hidden rules and calendars.
+        func visibleLog(limit: Int) -> [String] {
+            let log = sync.recentLog(limit: 200)
+            guard let allowed = scope() else { return log.suffix(limit).map(\.line) }
+            var hidden = Set(config.config.syncRules.filter { !isVisible($0, allowed) }.map(sync.currentLabel))
+            hidden.formUnion(((try? store.calendars()) ?? []).filter { !allowed.contains($0.id) }.map(\.displayName))
+            return log.filter { !hidden.contains($0.rule) }.suffix(limit).map(\.line)
+        }
+
         func findRule(_ reference: String) throws -> SyncRule {
-            let rules = config.config.syncRules
+            let rules = visibleRules()
             if let uuid = UUID(uuidString: reference), let rule = rules.first(where: { $0.id == uuid }) { return rule }
             let matches = rules.filter { $0.id.uuidString.lowercased().hasPrefix(reference.lowercased()) }
             if matches.count == 1 { return matches[0] }
@@ -501,12 +528,12 @@ public enum CalendarTools {
 
         func applyCalendars(_ args: ToolArguments, to rule: inout SyncRule) throws {
             if let source = args.string("source_calendar") {
-                let info = try store.calendarInfo(reference: source)
+                let info = try store.calendarInfo(reference: source, allowed: scope())
                 rule.sourceCalendarId = info.id
                 rule.sourceCalendarName = info.displayName
             }
             if let target = args.string("target_calendar") {
-                let info = try store.calendarInfo(reference: target)
+                let info = try store.calendarInfo(reference: target, allowed: scope())
                 guard info.writable else { throw ToolError("Target calendar is read-only: \(info.displayName)") }
                 rule.targetCalendarId = info.id
                 rule.targetCalendarName = info.displayName
@@ -535,8 +562,8 @@ public enum CalendarTools {
                 lastRunAt: sync.lastRunAt.map(DateInput.format),
                 nextRunAt: sync.nextRunAt.map(DateInput.format),
                 lastError: sync.lastErrorMessage,
-                rules: current.syncRules.map(ruleInfo),
-                recentLog: sync.recentLog(limit: 25).map(\.line)
+                rules: visibleRules().map(ruleInfo),
+                recentLog: visibleLog(limit: 25)
             )
         })
 
@@ -563,7 +590,7 @@ public enum CalendarTools {
                 try applyOptions(args, to: &rule)
                 results = [sync.runAdHoc(rule, from: from, to: to)]
             } else {
-                results = sync.run(from: from, to: to)
+                results = sync.run(ruleIds: visibleRules().filter(\.enabled).map(\.id), from: from, to: to)
             }
             return RunResult(from: DateInput.format(from), to: DateInput.format(to), results: results)
         })
@@ -630,7 +657,7 @@ public enum CalendarTools {
             readOnly: false,
             destructive: true
         ) { args in
-            let calendar = try store.calendarInfo(reference: try args.requiredString("calendar"))
+            let calendar = try store.calendarInfo(reference: try args.requiredString("calendar"), allowed: scope())
             let marker = try args.string("rule_id").map { try findRule($0).marker }
             let (from, to) = try range(args)
             let dryRun = try args.bool("dry_run") ?? false

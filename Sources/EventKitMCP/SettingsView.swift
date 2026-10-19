@@ -7,6 +7,8 @@ struct SettingsView: View {
         TabView {
             GeneralSettingsTab()
                 .tabItem { Label("General", systemImage: "gearshape") }
+            MCPSettingsTab()
+                .tabItem { Label("MCP", systemImage: "server.rack") }
             SyncSettingsTab()
                 .tabItem { Label("Sync", systemImage: "arrow.triangle.2.circlepath") }
             SyncLogTab()
@@ -21,41 +23,11 @@ struct SettingsView: View {
 
 private struct GeneralSettingsTab: View {
     @EnvironmentObject private var model: AppModel
-    @State private var portText = ""
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var launchAtLoginError: String?
 
     var body: some View {
         Form {
-            Section("MCP server") {
-                LabeledContent("Endpoint") {
-                    HStack {
-                        Text(model.endpointURL).font(.body.monospaced()).textSelection(.enabled)
-                        CopyButton(text: model.endpointURL)
-                    }
-                }
-                LabeledContent("Status") {
-                    Text(model.serverStatusText).foregroundStyle(serverStatusColor)
-                }
-                LabeledContent("Port") {
-                    HStack {
-                        TextField("Port", text: $portText)
-                            .frame(width: 80)
-                            .onSubmit(applyPort)
-                        Button("Apply", action: applyPort).disabled(parsedPort == nil || parsedPort == model.config.port)
-                    }
-                }
-                LabeledContent("Claude Code") {
-                    HStack(alignment: .top) {
-                        Text(model.claudeCommand).font(.caption.monospaced()).textSelection(.enabled)
-                        CopyButton(text: model.claudeCommand)
-                    }
-                }
-                Text("Only reachable from this Mac: the server listens on 127.0.0.1 and ::1 only and rejects requests whose Host or Origin is not localhost.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
             Section("Calendar access") {
                 LabeledContent("Status") {
                     Text(model.accessDescription.capitalized)
@@ -86,7 +58,7 @@ private struct GeneralSettingsTab: View {
                     Text("No calendars available.").foregroundStyle(.secondary)
                 }
                 ForEach(model.calendars) { calendar in
-                    Toggle(isOn: countdownBinding(calendar.id)) {
+                    Toggle(isOn: model.calendarSelection(\.countdownCalendarIds, contains: calendar.id)) {
                         CalendarLabel(calendar: calendar)
                     }
                 }
@@ -101,7 +73,97 @@ private struct GeneralSettingsTab: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private func setLaunchAtLogin(_ enabled: Bool) {
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+            launchAtLoginError = nil
+        } catch {
+            launchAtLoginError = "Could not change login item: \(error.localizedDescription). Run the app from ~/Applications."
+        }
+    }
+}
+
+// MARK: - MCP
+
+private struct MCPSettingsTab: View {
+    @EnvironmentObject private var model: AppModel
+    @State private var portText = ""
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Enable MCP server", isOn: model.binding(\.mcpServerEnabled))
+                LabeledContent("Status") {
+                    Text(model.serverStatusText).foregroundStyle(serverStatusColor)
+                }
+                LabeledContent("Endpoint") {
+                    HStack {
+                        Text(model.endpointURL).font(.body.monospaced()).textSelection(.enabled)
+                        CopyButton(text: model.endpointURL)
+                    }
+                }
+                LabeledContent("Port") {
+                    HStack {
+                        TextField("Port", text: $portText)
+                            .frame(width: 80)
+                            .onSubmit(applyPort)
+                        Button("Apply", action: applyPort).disabled(parsedPort == nil || parsedPort == model.config.port)
+                    }
+                }
+                LabeledContent("Claude Code") {
+                    HStack(alignment: .top) {
+                        Text(model.claudeCommand).font(.caption.monospaced()).textSelection(.enabled)
+                        CopyButton(text: model.claudeCommand)
+                    }
+                }
+            } header: {
+                Text("MCP server")
+            } footer: {
+                Text("Only reachable from this Mac: the server listens on 127.0.0.1 and ::1 only and rejects requests whose Host or Origin is not localhost. Calendar sync and the menu bar keep working while the server is disabled.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                if model.calendars.isEmpty {
+                    Text("No calendars available.").foregroundStyle(.secondary)
+                } else {
+                    HStack {
+                        Text(selectionSummary).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Select All") { model.updateConfig { $0.mcpCalendarIds = nil } }
+                            .disabled(model.config.mcpCalendarIds == nil)
+                        Button("Select None") { model.updateConfig { $0.mcpCalendarIds = [] } }
+                            .disabled(model.config.mcpCalendarIds?.isEmpty == true)
+                    }
+                }
+                ForEach(model.calendars) { calendar in
+                    Toggle(isOn: model.calendarSelection(\.mcpCalendarIds, contains: calendar.id)) {
+                        CalendarLabel(calendar: calendar)
+                    }
+                }
+            } header: {
+                Text("Calendars available to MCP clients")
+            } footer: {
+                Text("MCP clients can only list, search, create and change events in the selected calendars, and only see sync rules between them. While all calendars are selected, new calendars are included automatically.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
         .onAppear { portText = String(model.config.port) }
+    }
+
+    private var selectionSummary: String {
+        guard let ids = model.config.mcpCalendarIds else { return "All calendars" }
+        let count = model.calendars.filter { ids.contains($0.id) }.count
+        return "\(count) of \(model.calendars.count) calendars"
     }
 
     private var parsedPort: Int? {
@@ -120,33 +182,6 @@ private struct GeneralSettingsTab: View {
     private func applyPort() {
         guard let port = parsedPort else { return }
         model.updateConfig { $0.port = port }
-    }
-
-    /// nil in the config means "all calendars"; it is materialized on the first change.
-    private func countdownBinding(_ id: String) -> Binding<Bool> {
-        Binding(
-            get: { model.config.countdownCalendarIds?.contains(id) ?? true },
-            set: { included in
-                let all = model.calendars.map(\.id)
-                var selected = Set(model.config.countdownCalendarIds ?? all)
-                if included { selected.insert(id) } else { selected.remove(id) }
-                let value: [String]? = Set(all).isSubset(of: selected) ? nil : all.filter(selected.contains)
-                model.updateConfig { $0.countdownCalendarIds = value }
-            }
-        )
-    }
-
-    private func setLaunchAtLogin(_ enabled: Bool) {
-        do {
-            if enabled {
-                try SMAppService.mainApp.register()
-            } else {
-                try SMAppService.mainApp.unregister()
-            }
-            launchAtLoginError = nil
-        } catch {
-            launchAtLoginError = "Could not change login item: \(error.localizedDescription). Run the app from ~/Applications."
-        }
     }
 }
 

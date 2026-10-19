@@ -145,9 +145,15 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.addItem(disabled(syncStatusText(), symbol: nil, small: true))
 
         menu.addItem(.separator())
-        let serverRunning: Bool
-        if case .running = model.serverStatus { serverRunning = true } else { serverRunning = false }
-        menu.addItem(disabled("MCP server: \(serverRunning ? "Running" : "Not running")", symbol: "server.rack", small: false))
+        let serverState: String
+        if !model.config.mcpServerEnabled {
+            serverState = "Disabled"
+        } else if case .running = model.serverStatus {
+            serverState = "Running"
+        } else {
+            serverState = "Not running"
+        }
+        menu.addItem(disabled("MCP server: \(serverState)", symbol: "server.rack", small: false))
 
         menu.addItem(.separator())
         menu.addItem(item("Settings…", #selector(showSettings), key: ",", symbol: "gearshape"))

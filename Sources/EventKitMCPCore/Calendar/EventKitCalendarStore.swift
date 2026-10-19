@@ -65,29 +65,41 @@ public final class EventKitCalendarStore: CalendarBackend, @unchecked Sendable {
     }
 
     // MARK: - Calendars
+    //
+    // The MCP-facing methods take `allowed`: the calendar ids MCP clients may use (nil = all).
+    // Calendars and events outside it behave as if they did not exist.
 
-    public func calendars() throws -> [CalendarInfo] {
+    public func calendars(allowed: Set<String>? = nil) throws -> [CalendarInfo] {
         try ensureAccess()
         return onQueue {
             let defaultId = store.defaultCalendarForNewEvents?.calendarIdentifier
-            return store.calendars(for: .event)
+            return visibleCalendars(allowed)
                 .map { Self.info(for: $0, defaultId: defaultId) }
                 .sorted { ($0.account, $0.title) < ($1.account, $1.title) }
         }
     }
 
-    public func calendarInfo(reference: String) throws -> CalendarInfo {
+    public func calendarInfo(reference: String, allowed: Set<String>? = nil) throws -> CalendarInfo {
         try ensureAccess()
         return try onQueue {
-            Self.info(for: try resolveCalendar(reference), defaultId: store.defaultCalendarForNewEvents?.calendarIdentifier)
+            Self.info(for: try resolveCalendar(reference, allowed: allowed), defaultId: store.defaultCalendarForNewEvents?.calendarIdentifier)
         }
     }
 
+    private func visibleCalendars(_ allowed: Set<String>?) -> [EKCalendar] {
+        store.calendars(for: .event).filter { Self.isAllowed($0, allowed) }
+    }
+
+    static func isAllowed(_ calendar: EKCalendar?, _ allowed: Set<String>?) -> Bool {
+        guard let allowed else { return true }
+        return calendar.map { allowed.contains($0.calendarIdentifier) } ?? false
+    }
+
     /// Accepts a calendar identifier, a title, or "Title (Account)".
-    func resolveCalendar(_ reference: String) throws -> EKCalendar {
+    func resolveCalendar(_ reference: String, allowed: Set<String>? = nil) throws -> EKCalendar {
         let ref = reference.trimmingCharacters(in: .whitespaces)
-        if let calendar = store.calendar(withIdentifier: ref) { return calendar }
-        let all = store.calendars(for: .event)
+        if let calendar = store.calendar(withIdentifier: ref), Self.isAllowed(calendar, allowed) { return calendar }
+        let all = visibleCalendars(allowed)
         let byDisplayName = all.filter { Self.displayName($0).caseInsensitiveCompare(ref) == .orderedSame }
         if byDisplayName.count == 1 { return byDisplayName[0] }
         let byTitle = all.filter { $0.title.caseInsensitiveCompare(ref) == .orderedSame }
@@ -96,32 +108,36 @@ public final class EventKitCalendarStore: CalendarBackend, @unchecked Sendable {
             let options = byTitle.map { "\(Self.displayName($0)) [id: \($0.calendarIdentifier)]" }.joined(separator: "; ")
             throw CalendarStoreError("Calendar name '\(ref)' is ambiguous. Use one of: \(options)")
         }
+        if all.isEmpty {
+            throw CalendarStoreError("Calendar not found: '\(ref)'. No calendars are available; the user can choose them in EventKit MCP Settings → MCP.")
+        }
         let names = all.map(Self.displayName).sorted().joined(separator: ", ")
         throw CalendarStoreError("Calendar not found: '\(ref)'. Available calendars: \(names)")
     }
 
-    func resolveCalendars(_ references: [String]?) throws -> [EKCalendar]? {
-        guard let references, !references.isEmpty else { return nil }
-        return try references.map(resolveCalendar)
+    /// nil means every calendar; without references that is all allowed calendars.
+    func resolveCalendars(_ references: [String]?, allowed: Set<String>? = nil) throws -> [EKCalendar]? {
+        guard let references, !references.isEmpty else { return allowed == nil ? nil : visibleCalendars(allowed) }
+        return try references.map { try resolveCalendar($0, allowed: allowed) }
     }
 
     // MARK: - Events (MCP)
 
     public func events(
-        from: Date, to: Date, calendars references: [String]?, includeNotes: Bool, now: Date = Date()
+        from: Date, to: Date, calendars references: [String]?, includeNotes: Bool, now: Date = Date(), allowed: Set<String>? = nil
     ) throws -> [EventInfo] {
         try ensureAccess()
         return try onQueue {
-            let calendars = try resolveCalendars(references)
+            let calendars = try resolveCalendars(references, allowed: allowed)
             return try fetch(from: from, to: to, calendars: calendars)
                 .map { Self.info(for: $0, includeNotes: includeNotes, now: now) }
         }
     }
 
-    public func event(id: String) throws -> EventInfo {
+    public func event(id: String, allowed: Set<String>? = nil) throws -> EventInfo {
         try ensureAccess()
         return try onQueue {
-            Self.info(for: try findEvent(id: id), includeNotes: true, includeDetails: true, now: Date())
+            Self.info(for: try findEvent(id: id, allowed: allowed), includeNotes: true, includeDetails: true, now: Date())
         }
     }
 
@@ -157,13 +173,16 @@ public final class EventKitCalendarStore: CalendarBackend, @unchecked Sendable {
         }
     }
 
-    public func createEvent(_ changes: EventChanges) throws -> EventInfo {
+    public func createEvent(_ changes: EventChanges, allowed: Set<String>? = nil) throws -> EventInfo {
         try ensureAccess()
         return try onQueue {
             let event = EKEvent(eventStore: store)
             if let reference = changes.calendar {
-                event.calendar = try resolveCalendar(reference)
+                event.calendar = try resolveCalendar(reference, allowed: allowed)
             } else if let calendar = store.defaultCalendarForNewEvents {
+                guard Self.isAllowed(calendar, allowed) else {
+                    throw CalendarStoreError("The default calendar is not available to MCP clients; pass `calendar`.")
+                }
                 event.calendar = calendar
             } else {
                 throw CalendarStoreError("No default calendar; pass `calendar`.")
@@ -177,15 +196,15 @@ public final class EventKitCalendarStore: CalendarBackend, @unchecked Sendable {
         }
     }
 
-    public func updateEvent(id: String, changes: EventChanges, futureEvents: Bool) throws -> EventInfo {
+    public func updateEvent(id: String, changes: EventChanges, futureEvents: Bool, allowed: Set<String>? = nil) throws -> EventInfo {
         try ensureAccess()
         return try onQueue {
-            let event = try findEvent(id: id)
+            let event = try findEvent(id: id, allowed: allowed)
             guard event.calendar.allowsContentModifications else {
                 throw CalendarStoreError("Calendar is read-only: \(Self.displayName(event.calendar))")
             }
             if let reference = changes.calendar {
-                event.calendar = try resolveCalendar(reference)
+                event.calendar = try resolveCalendar(reference, allowed: allowed)
             }
             try apply(changes, to: event)
             try store.save(event, span: futureEvents ? .futureEvents : .thisEvent, commit: true)
@@ -193,10 +212,10 @@ public final class EventKitCalendarStore: CalendarBackend, @unchecked Sendable {
         }
     }
 
-    public func deleteEvent(id: String, futureEvents: Bool) throws -> EventInfo {
+    public func deleteEvent(id: String, futureEvents: Bool, allowed: Set<String>? = nil) throws -> EventInfo {
         try ensureAccess()
         return try onQueue {
-            let event = try findEvent(id: id)
+            let event = try findEvent(id: id, allowed: allowed)
             let info = Self.info(for: event, includeNotes: false, now: Date())
             try store.remove(event, span: futureEvents ? .futureEvents : .thisEvent, commit: true)
             return info
@@ -205,10 +224,10 @@ public final class EventKitCalendarStore: CalendarBackend, @unchecked Sendable {
 
     /// Time blocked by events: everything except free, canceled and declined events. All-day events
     /// only count when explicitly marked busy or out of office.
-    public func busyIntervals(from: Date, to: Date, calendars references: [String]?) throws -> [BusyInterval] {
+    public func busyIntervals(from: Date, to: Date, calendars references: [String]?, allowed: Set<String>? = nil) throws -> [BusyInterval] {
         try ensureAccess()
         return try onQueue {
-            let calendars = try resolveCalendars(references)
+            let calendars = try resolveCalendars(references, allowed: allowed)
             return try fetch(from: from, to: to, calendars: calendars).compactMap { event in
                 if event.status == .canceled || Self.myParticipation(event) == .declined { return nil }
                 let availability = Self.availability(event.availability)
@@ -379,6 +398,8 @@ public final class EventKitCalendarStore: CalendarBackend, @unchecked Sendable {
         guard to.timeIntervalSince(from) <= 4 * 365 * 86400 else {
             throw CalendarStoreError("Date range is limited to 4 years.")
         }
+        // No calendars means no events; don't leave an empty list to EventKit's interpretation.
+        if let calendars, calendars.isEmpty { return [] }
         let predicate = store.predicateForEvents(withStart: from, end: to, calendars: calendars)
         return store.events(matching: predicate).sorted { $0.compareStartDate(with: $1) == .orderedAscending }
     }
@@ -392,7 +413,7 @@ public final class EventKitCalendarStore: CalendarBackend, @unchecked Sendable {
         return "\(identifier)|\(Int(occurrence.timeIntervalSince1970))"
     }
 
-    private func findEvent(id: String) throws -> EKEvent {
+    private func findEvent(id: String, allowed: Set<String>? = nil) throws -> EKEvent {
         let trimmed = id.trimmingCharacters(in: .whitespaces)
         if let separator = trimmed.lastIndex(of: "|"),
            let epoch = Int(trimmed[trimmed.index(after: separator)...]) {
@@ -408,10 +429,10 @@ public final class EventKitCalendarStore: CalendarBackend, @unchecked Sendable {
                 let date: Date = event.occurrenceDate ?? event.startDate
                 return abs(date.timeIntervalSince(occurrence)) < 1
             }
-            if let match { return match }
+            if let match, Self.isAllowed(match.calendar, allowed) { return match }
             throw CalendarStoreError("Event occurrence not found: \(id)")
         }
-        if let event = store.event(withIdentifier: trimmed) { return event }
+        if let event = store.event(withIdentifier: trimmed), Self.isAllowed(event.calendar, allowed) { return event }
         throw CalendarStoreError("Event not found: \(id)")
     }
 

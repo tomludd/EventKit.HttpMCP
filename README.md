@@ -51,6 +51,11 @@ Other clients (`.mcp.json` / Claude Desktop style):
 
 Prefer `127.0.0.1` over `localhost`. The server listens on both `127.0.0.1` and `::1`, but `127.0.0.1` avoids DNS lookups.
 
+**Settings → MCP** has the server options:
+
+- **Enable MCP server**: turn the HTTP endpoint off without quitting the app. Calendar sync and the menu bar keep working.
+- **Calendars available to MCP clients**: choose which calendars the tools can see. Events in other calendars can't be listed, searched, fetched, created, moved or deleted through MCP, and `get_sync_status`/`run_sync` only cover rules whose source and target are both selected. While every calendar is selected, new calendars are included automatically.
+
 ## Tools
 
 | Tool | What it does |
@@ -99,7 +104,7 @@ As in `outlook-cli`:
 
 ## Files
 
-- Config: `~/Library/Application Support/EventKitMCP/config.json` (port, sync rules, countdown settings)
+- Config: `~/Library/Application Support/EventKitMCP/config.json` (port, MCP on/off and calendars, sync rules, countdown settings)
 - `Sources/EventKitMCPCore`: EventKit store, sync engine, MCP server, HTTP server (unit-tested)
 - `Sources/EventKitMCP`: menu bar app (AppKit status item + SwiftUI settings)
 

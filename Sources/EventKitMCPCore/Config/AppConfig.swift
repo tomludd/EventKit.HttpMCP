@@ -77,6 +77,9 @@ public struct AppConfig: Codable, Sendable, Equatable {
     public static let defaultPort = 8765
 
     public var port: Int
+    public var mcpServerEnabled: Bool
+    /// Calendars MCP clients can see and change; nil means all calendars.
+    public var mcpCalendarIds: [String]?
     public var autoSyncEnabled: Bool
     public var syncDaysAhead: Int
     public var syncRules: [SyncRule]
@@ -90,6 +93,8 @@ public struct AppConfig: Codable, Sendable, Equatable {
 
     public init() {
         port = Self.defaultPort
+        mcpServerEnabled = true
+        mcpCalendarIds = nil
         autoSyncEnabled = true
         syncDaysAhead = 90
         syncRules = []
@@ -104,6 +109,8 @@ public struct AppConfig: Codable, Sendable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let d = AppConfig()
         port = try c.decodeIfPresent(Int.self, forKey: .port) ?? d.port
+        mcpServerEnabled = try c.decodeIfPresent(Bool.self, forKey: .mcpServerEnabled) ?? d.mcpServerEnabled
+        mcpCalendarIds = try c.decodeIfPresent([String].self, forKey: .mcpCalendarIds)
         autoSyncEnabled = try c.decodeIfPresent(Bool.self, forKey: .autoSyncEnabled) ?? d.autoSyncEnabled
         syncDaysAhead = try c.decodeIfPresent(Int.self, forKey: .syncDaysAhead) ?? d.syncDaysAhead
         syncRules = try c.decodeIfPresent([SyncRule].self, forKey: .syncRules) ?? d.syncRules
@@ -113,6 +120,9 @@ public struct AppConfig: Codable, Sendable, Equatable {
         alwaysShowNextMeeting = try c.decodeIfPresent(Bool.self, forKey: .alwaysShowNextMeeting) ?? d.alwaysShowNextMeeting
         showMeetingTitleInMenuBar = try c.decodeIfPresent(Bool.self, forKey: .showMeetingTitleInMenuBar) ?? d.showMeetingTitleInMenuBar
     }
+
+    /// `mcpCalendarIds` as a set for lookups; nil means all calendars.
+    public var mcpCalendarScope: Set<String>? { mcpCalendarIds.map(Set.init) }
 }
 
 /// Thread-safe JSON persistence of `AppConfig` in ~/Library/Application Support/EventKitMCP/config.json.

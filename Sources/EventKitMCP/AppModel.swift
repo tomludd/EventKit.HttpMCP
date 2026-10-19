@@ -41,7 +41,7 @@ final class AppModel: ObservableObject {
 
     var serverStatusText: String {
         switch serverStatus {
-        case .stopped: return "Stopped"
+        case .stopped: return config.mcpServerEnabled ? "Stopped" : "Disabled"
         case .starting: return "Starting…"
         case .running(let port): return "Running on 127.0.0.1:\(port)"
         case .failed(let message): return "Error: \(message)"
@@ -74,7 +74,7 @@ final class AppModel: ObservableObject {
         RunLoop.main.add(timer, forMode: .common)
         refreshTimer = timer
 
-        startServer()
+        if config.mcpServerEnabled { startServer() }
         sync.startScheduler()
         refreshSyncState()
 
@@ -105,10 +105,29 @@ final class AppModel: ObservableObject {
         )
     }
 
+    /// Whether a calendar is in a selection where nil means "all calendars". nil is materialized
+    /// on the first change and restored once every calendar is selected again.
+    func calendarSelection(_ keyPath: WritableKeyPath<AppConfig, [String]?>, contains id: String) -> Binding<Bool> {
+        Binding(
+            get: { self.config[keyPath: keyPath]?.contains(id) ?? true },
+            set: { included in
+                let all = self.calendars.map(\.id)
+                var selected = Set(self.config[keyPath: keyPath] ?? all)
+                if included { selected.insert(id) } else { selected.remove(id) }
+                let value: [String]? = Set(all).isSubset(of: selected) ? nil : all.filter(selected.contains)
+                self.updateConfig { $0[keyPath: keyPath] = value }
+            }
+        )
+    }
+
     private func configDidChange() {
         let previous = config
         config = configStore.config
-        if config.port != serverPort { restartServer() }
+        if !config.mcpServerEnabled {
+            stopServer()
+        } else if httpServer == nil || config.port != serverPort {
+            restartServer()
+        }
         if config.countdownCalendarIds != previous.countdownCalendarIds { refreshMeetings() }
         refreshSyncState()
     }
@@ -181,9 +200,13 @@ final class AppModel: ObservableObject {
         server.start()
     }
 
-    func restartServer() {
+    func stopServer() {
         httpServer?.stop()
         httpServer = nil
+    }
+
+    func restartServer() {
+        stopServer()
         startServer()
     }
 
