@@ -6,30 +6,43 @@ A macOS menu bar app that exposes your calendars (every account in Calendar.app:
 - **Calendar sync & blocking**: a port of the block/copy sync from `outlook-cli` (`CalendarSyncService` + `SyncScheduler`), built on EventKit so it works across all accounts on the Mac.
 - **Menu bar widget**: shows a countdown to the next meeting when it is less than 10 minutes away, in red when it is less than 4 minutes away. It also lists today's and tomorrow's meetings (click to join Teams/Zoom/Meet) and has **Sync Calendars Now**.
 
-## Why Swift
+## Install
 
-| | Swift | Go (like `ical`) | .NET |
-|---|---|---|---|
-| EventKit | Native | cgo + Objective‑C bridge | .NET for macOS bindings (Xcode workload) |
-| Menu bar UI with colored countdown | AppKit `NSStatusItem` + SwiftUI settings | Third-party systray libs via cgo | Needs `net*-macos` + AppKit bindings |
-| Calendar permission (TCC) | `.app` bundle with usage description | Needs an app bundle anyway | Same |
-| HTTP server | `Network.framework`, no dependencies | stdlib | Kestrel |
-| Toolchain on this Mac | Installed (Xcode 27 / Swift 6.4) | Not installed | Installed |
+Requires macOS 14+ and Xcode. Both options build the app from source on your Mac, and both need the full Xcode app, not just the Command Line Tools, because of the SwiftUI macros.
 
-Everything here needs to live in a signed `.app` bundle that talks to EventKit and AppKit. Swift does that with no bridging layer and no third-party dependencies.
+### Homebrew
 
-## Build & run
+This repository is also a Homebrew tap:
 
-Requires macOS 14+ and Xcode. SwiftUI macros need the full Xcode toolchain; the script sets `DEVELOPER_DIR` for you.
+```sh
+brew tap tomludd/eventkit https://github.com/tomludd/EventKit.HttpMCP
+brew install --HEAD tomludd/eventkit/eventkit-mcp
+```
+
+Homebrew can't put apps in `~/Applications`, so link the app there and start it:
+
+```sh
+mkdir -p ~/Applications
+ln -sfn "$(brew --prefix)/opt/eventkit-mcp/EventKit MCP.app" ~/Applications/
+open ~/Applications/"EventKit MCP.app"
+```
+
+If you used the build script before, quit the app and delete `~/Applications/EventKit MCP.app` before linking. `--HEAD` builds the latest `main` (there are no tagged releases yet). To update, run `brew upgrade --fetch-HEAD eventkit-mcp`. The link keeps working after updates.
+
+### From source
 
 ```sh
 scripts/build-app.sh             # builds build/EventKit MCP.app
 scripts/build-app.sh --install   # also copies it to ~/Applications and (re)starts it
 ```
 
+The script sets `DEVELOPER_DIR` to Xcode for you.
+
+### First launch
+
 On first launch macOS asks for calendar access. If you deny it, the menu bar icon shows a warning badge; use **Grant Calendar Access…** in the menu (it opens System Settings → Privacy & Security → Calendars).
 
-The app is ad-hoc signed by default, so macOS may ask for calendar access again after a rebuild. Set `CODESIGN_IDENTITY="Apple Development: …"` to sign with a stable identity.
+The app is ad-hoc signed, so macOS may ask for calendar access again after a rebuild or `brew upgrade`. With the build script, set `CODESIGN_IDENTITY="Apple Development: …"` to sign with a stable identity.
 
 Enable **Settings → General → Launch at login** to start it automatically.
 
@@ -37,7 +50,7 @@ Enable **Settings → General → Launch at login** to start it automatically.
 
 Endpoint: `http://127.0.0.1:8765/mcp` (the port is configurable in Settings).
 
-Claude Code (the menu has **Copy Claude Code Command**):
+Claude Code (**Settings → MCP** has a copy button):
 
 ```sh
 claude mcp add --transport http --scope user eventkit http://127.0.0.1:8765/mcp
@@ -107,6 +120,7 @@ As in `outlook-cli`:
 - Config: `~/Library/Application Support/EventKitMCP/config.json` (port, MCP on/off and calendars, sync rules, countdown settings)
 - `Sources/EventKitMCPCore`: EventKit store, sync engine, MCP server, HTTP server (unit-tested)
 - `Sources/EventKitMCP`: menu bar app (AppKit status item + SwiftUI settings)
+- `Formula/eventkit-mcp.rb`: Homebrew formula (this repo is its own tap)
 
 ## Development
 
