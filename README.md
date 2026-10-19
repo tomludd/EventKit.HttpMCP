@@ -16,7 +16,7 @@ This repository is also a Homebrew tap:
 
 ```sh
 brew tap tomludd/eventkit https://github.com/tomludd/EventKit.HttpMCP
-brew install --HEAD tomludd/eventkit/eventkit-mcp
+brew install tomludd/eventkit/eventkit-mcp
 ```
 
 Homebrew can't put apps in `~/Applications`, so link the app there and start it:
@@ -27,7 +27,7 @@ ln -sfn "$(brew --prefix)/opt/eventkit-mcp/EventKit MCP.app" ~/Applications/
 open ~/Applications/"EventKit MCP.app"
 ```
 
-If you used the build script before, quit the app and delete `~/Applications/EventKit MCP.app` before linking. `--HEAD` builds the latest `main` (there are no tagged releases yet). To update, run `brew upgrade --fetch-HEAD eventkit-mcp`. The link keeps working after updates.
+If you used the build script before, quit the app and delete `~/Applications/EventKit MCP.app` before linking. To update, run `brew upgrade eventkit-mcp`. The link keeps working after updates. To build the latest `main` instead of the latest release, install with `--HEAD` and update with `brew upgrade --fetch-HEAD eventkit-mcp`.
 
 ### From source
 
@@ -129,3 +129,5 @@ export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 swift test     # sync engine, HTTP/MCP handling, dates, countdown, free slots
 swift build
 ```
+
+To release: bump `CFBundleShortVersionString` in `Resources/Info.plist`, tag `vX.Y.Z` on `main` and push the tag, then point `url` and `sha256` in `Formula/eventkit-mcp.rb` at the new tag's tarball.

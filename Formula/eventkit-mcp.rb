@@ -1,6 +1,6 @@
 # Homebrew formula: this repository doubles as a tap.
 #   brew tap tomludd/eventkit https://github.com/tomludd/EventKit.HttpMCP
-#   brew install --HEAD tomludd/eventkit/eventkit-mcp
+#   brew install tomludd/eventkit/eventkit-mcp      (--HEAD builds the latest main)
 class EventkitMcp < Formula
   desc "Menu bar app that exposes your macOS calendars as a local MCP server over HTTP"
   homepage "https://github.com/tomludd/EventKit.HttpMCP"
@@ -29,7 +29,8 @@ class EventkitMcp < Formula
 
       macOS asks for calendar access on first launch, and again after each upgrade
       because the app is ad-hoc signed. Update with:
-        brew upgrade --fetch-HEAD eventkit-mcp
+        brew upgrade eventkit-mcp
+      (add --fetch-HEAD if you installed with --HEAD)
     EOS
   end
 
