@@ -6,7 +6,7 @@ class EventkitMcp < Formula
   homepage "https://github.com/tomludd/EventKit.HttpMCP"
   url "https://github.com/tomludd/EventKit.HttpMCP/archive/refs/tags/v1.0.0.tar.gz"
   sha256 "af8a100a6545d9fe9085c1cdc51f223f6aa43c34b652aa92de2bfcd751e7cb7a"
-  head"https://github.com/tomludd/EventKit.HttpMCP.git", branch: "main"
+  head "https://github.com/tomludd/EventKit.HttpMCP.git", branch: "main"
 
   # SwiftUI macros need the full Xcode toolchain, not just the Command Line Tools.
   depends_on xcode: ["16.0", :build]
