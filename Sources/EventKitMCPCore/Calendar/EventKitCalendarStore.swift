@@ -283,6 +283,7 @@ public final class EventKitCalendarStore: CalendarBackend, @unchecked Sendable {
             let events = (try? fetch(from: now, to: end, calendars: calendars)) ?? []
             return events.filter { $0.endDate > now }.map { event in
                 let info = Self.info(for: event, includeNotes: false, now: now)
+                let participation = Self.myParticipation(event)
                 return MeetingSnapshot(
                     id: info.id,
                     eventIdentifier: event.eventIdentifier ?? "",
@@ -295,12 +296,21 @@ public final class EventKitCalendarStore: CalendarBackend, @unchecked Sendable {
                     calendarId: event.calendar.calendarIdentifier,
                     calendarTitle: event.calendar.title,
                     calendarColorHex: Self.hex(event.calendar.color),
-                    isDeclined: Self.myParticipation(event) == .declined,
-                    isCanceled: event.status == .canceled,
+                    isDeclined: participation == .declined,
+                    isTentative: participation == .tentative || event.availability == .tentative,
+                    isCanceled: Self.isCanceled(event, participation: participation),
                     isSyncedBlock: SyncMarkers.isSynced(notes: event.notes)
                 )
             }
         }
+    }
+
+    /// For meetings I was only invited to through a group (so I am not on the attendee list until I
+    /// answer), macOS can report `canceled` while Exchange and Outlook still have the meeting. Only
+    /// trust the flag when I am on the attendee list or organize it, or the event has no attendees.
+    /// Meetings Exchange really cancels still get a "Canceled:" prefix in the title.
+    static func isCanceled(_ event: EKEvent, participation: ParticipationStatus?) -> Bool {
+        event.status == .canceled && (participation != nil || !event.hasAttendees)
     }
 
     // MARK: - CalendarBackend (sync engine)

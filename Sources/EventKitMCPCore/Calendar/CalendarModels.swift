@@ -169,13 +169,16 @@ public struct MeetingSnapshot: Sendable, Equatable, Identifiable {
     public var calendarTitle: String
     public var calendarColorHex: String?
     public var isDeclined: Bool
+    /// Answered tentative, or shown as tentative (Exchange puts unanswered invites there).
+    public var isTentative: Bool
     public var isCanceled: Bool
     public var isSyncedBlock: Bool
 
     public init(
         id: String, eventIdentifier: String, title: String, start: Date, end: Date, isAllDay: Bool = false,
         location: String? = nil, joinURL: URL? = nil, calendarId: String = "", calendarTitle: String = "",
-        calendarColorHex: String? = nil, isDeclined: Bool = false, isCanceled: Bool = false, isSyncedBlock: Bool = false
+        calendarColorHex: String? = nil, isDeclined: Bool = false, isTentative: Bool = false, isCanceled: Bool = false,
+        isSyncedBlock: Bool = false
     ) {
         self.id = id
         self.eventIdentifier = eventIdentifier
@@ -189,6 +192,7 @@ public struct MeetingSnapshot: Sendable, Equatable, Identifiable {
         self.calendarTitle = calendarTitle
         self.calendarColorHex = calendarColorHex
         self.isDeclined = isDeclined
+        self.isTentative = isTentative
         self.isCanceled = isCanceled
         self.isSyncedBlock = isSyncedBlock
     }

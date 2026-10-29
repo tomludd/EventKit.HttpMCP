@@ -181,7 +181,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     private func addMeetingSections(to menu: NSMenu, now: Date) {
         let calendar = Calendar.current
-        let visible = model.meetings.filter { !$0.isCanceled && !$0.isSyncedBlock && $0.end > now }
+        // Canceled meetings still in the calendar are listed (struck through); only sync-created blocks are hidden.
+        let visible = model.meetings.filter { !$0.isSyncedBlock && $0.end > now }
         let today = visible.filter { calendar.isDateInToday($0.start) || ($0.start < now) }
         let tomorrow = visible.filter { calendar.isDateInTomorrow($0.start) }
 
@@ -212,12 +213,17 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular), .foregroundColor: NSColor.secondaryLabelColor]
         )
         var titleAttributes: [NSAttributedString.Key: Any] = [.font: font]
-        if meeting.isDeclined {
+        if meeting.isDeclined || meeting.isCanceled {
             titleAttributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
             titleAttributes[.foregroundColor] = NSColor.secondaryLabelColor
         }
         title.append(NSAttributedString(string: meeting.title.isEmpty ? "(No title)" : meeting.title, attributes: titleAttributes))
-        if ongoing {
+        if meeting.isCanceled {
+            title.append(NSAttributedString(string: "  canceled", attributes: [.font: NSFont.menuFont(ofSize: 0), .foregroundColor: NSColor.systemRed]))
+        } else if meeting.isTentative && !meeting.isDeclined {
+            title.append(NSAttributedString(string: "  tentative", attributes: [.font: NSFont.menuFont(ofSize: 0), .foregroundColor: NSColor.systemOrange]))
+        }
+        if ongoing && !meeting.isCanceled {
             title.append(NSAttributedString(string: "  now", attributes: [.font: NSFont.menuFont(ofSize: 0), .foregroundColor: NSColor.systemGreen]))
         }
         item.attributedTitle = title
