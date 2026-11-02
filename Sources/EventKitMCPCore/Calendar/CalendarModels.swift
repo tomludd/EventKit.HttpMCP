@@ -38,11 +38,13 @@ public struct CalendarEventRecord: Sendable, Equatable {
     public var availability: EventAvailability
     public var status: EventStatus
     public var myParticipation: ParticipationStatus?
+    /// The event's own timezone; nil for floating (e.g. all-day) events.
+    public var timeZone: TimeZone?
 
     public init(
         id: String, calendarId: String, title: String, start: Date, end: Date, isAllDay: Bool = false,
         location: String? = nil, notes: String? = nil, availability: EventAvailability = .busy,
-        status: EventStatus = .none, myParticipation: ParticipationStatus? = nil
+        status: EventStatus = .none, myParticipation: ParticipationStatus? = nil, timeZone: TimeZone? = nil
     ) {
         self.id = id
         self.calendarId = calendarId
@@ -55,6 +57,7 @@ public struct CalendarEventRecord: Sendable, Equatable {
         self.availability = availability
         self.status = status
         self.myParticipation = myParticipation
+        self.timeZone = timeZone
     }
 }
 
@@ -68,10 +71,13 @@ public struct EventDraft: Sendable, Equatable {
     public var availability: EventAvailability
     /// nil keeps the calendar default, an empty array means no alerts.
     public var alertMinutesBefore: [Int]?
+    /// Pins the event to a timezone so it is not left floating; nil keeps the calendar default.
+    public var timeZone: TimeZone?
 
     public init(
         title: String, start: Date, end: Date, isAllDay: Bool = false, location: String? = nil,
-        notes: String? = nil, availability: EventAvailability = .busy, alertMinutesBefore: [Int]? = nil
+        notes: String? = nil, availability: EventAvailability = .busy, alertMinutesBefore: [Int]? = nil,
+        timeZone: TimeZone? = nil
     ) {
         self.title = title
         self.start = start
@@ -81,6 +87,7 @@ public struct EventDraft: Sendable, Equatable {
         self.notes = notes
         self.availability = availability
         self.alertMinutesBefore = alertMinutesBefore
+        self.timeZone = timeZone
     }
 }
 

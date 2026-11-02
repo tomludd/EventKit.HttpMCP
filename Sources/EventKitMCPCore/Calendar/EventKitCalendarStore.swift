@@ -345,7 +345,8 @@ public final class EventKitCalendarStore: CalendarBackend, @unchecked Sendable {
                     notes: event.notes,
                     availability: Self.availability(event.availability),
                     status: Self.status(event.status),
-                    myParticipation: Self.myParticipation(event)
+                    myParticipation: Self.myParticipation(event),
+                    timeZone: event.timeZone
                 )
             }
         }
@@ -362,6 +363,7 @@ public final class EventKitCalendarStore: CalendarBackend, @unchecked Sendable {
             event.isAllDay = draft.isAllDay
             event.startDate = draft.start
             event.endDate = draft.end
+            if !draft.isAllDay, let timeZone = draft.timeZone { event.timeZone = timeZone }
             event.location = draft.location
             event.notes = draft.notes
             if !calendar.supportedEventAvailabilities.isEmpty {

@@ -173,7 +173,8 @@ public final class CalendarSyncEngine {
                     location: source.location,
                     notes: sourceNotes.isEmpty ? marker : "\(sourceNotes)\n\(marker)",
                     availability: isOutOfOffice ? .unavailable : .free,
-                    alertMinutesBefore: []
+                    alertMinutesBefore: [],
+                    timeZone: source.timeZone
                 )
             case .block:
                 draft = EventDraft(
@@ -184,7 +185,8 @@ public final class CalendarSyncEngine {
                     location: blockLocation,
                     notes: "Blocked from \(sourceName)\n\(marker)",
                     availability: isOutOfOffice ? .unavailable : .busy,
-                    alertMinutesBefore: []
+                    alertMinutesBefore: [],
+                    timeZone: source.timeZone
                 )
             }
 

@@ -37,7 +37,8 @@ final class InMemoryBackend: CalendarBackend {
     func createEvent(_ draft: EventDraft, calendarId: String) throws {
         events.append(CalendarEventRecord(
             id: "e\(nextId)", calendarId: calendarId, title: draft.title, start: draft.start, end: draft.end,
-            isAllDay: draft.isAllDay, location: draft.location, notes: draft.notes, availability: draft.availability
+            isAllDay: draft.isAllDay, location: draft.location, notes: draft.notes, availability: draft.availability,
+            timeZone: draft.timeZone
         ))
         nextId += 1
     }
@@ -91,6 +92,27 @@ struct CalendarSyncEngineTests {
         #expect(blocks[0].availability == .busy)
         #expect(blocks[0].notes?.contains("Blocked from Work (Exchange)") == true)
         #expect(blocks[0].notes?.contains(CalendarSyncEngine.marker(mode: .block, sourceCalendarId: "work", targetCalendarId: "home")) == true)
+    }
+
+    @Test func blocksKeepTheSourceInstantAndTimeZoneAcrossDSTChange() throws {
+        let backend = makeBackend()
+        // 2026-10-25 is when Europe/Oslo leaves daylight saving; 09:00 local is UTC+1 after, UTC+2 before.
+        let oslo = TimeZone(identifier: "Europe/Oslo")!
+        let before = at(23, 9)
+        let after = at(26, 9)
+        for start in [before, after] {
+            var event = backend.add("work", "Meeting", start)
+            event.timeZone = oslo
+            backend.events[backend.events.count - 1] = event
+        }
+
+        _ = try run(backend)
+
+        let blocks = backend.inCalendar("home")
+        #expect(blocks.map(\.start) == [before, after])
+        #expect(blocks.map(\.end) == [before.addingTimeInterval(1800), after.addingTimeInterval(1800)])
+        #expect(blocks.allSatisfy { $0.timeZone == oslo })
+        #expect(try run(backend).created == 0)
     }
 
     @Test func secondRunIsIdempotent() throws {
