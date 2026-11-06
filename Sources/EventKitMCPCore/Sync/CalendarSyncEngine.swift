@@ -75,7 +75,11 @@ public final class CalendarSyncEngine {
 
     /// Stable marker for a source/target/mode combination.
     public static func marker(mode: SyncMode, sourceCalendarId: String, targetCalendarId: String) -> String {
-        "\(SyncMarkers.prefix)\(mode.rawValue):\(ruleHash(sourceCalendarId, targetCalendarId))]"
+        marker(mode: mode, key: ruleHash(sourceCalendarId, targetCalendarId))
+    }
+
+    static func marker(mode: SyncMode, key: String) -> String {
+        "\(SyncMarkers.prefix)\(mode.rawValue):\(key)]"
     }
 
     static func ruleHash(_ source: String, _ target: String) -> String {
@@ -83,8 +87,10 @@ public final class CalendarSyncEngine {
         return digest.prefix(4).map { String(format: "%02x", $0) }.joined()
     }
 
+    /// `marker` defaults to `marker(mode:sourceCalendarId:targetCalendarId:)`; saved rules pass their own
+    /// so events stay theirs when calendar ids change.
     public func run(
-        sourceCalendarId: String, targetCalendarId: String, from: Date, to: Date, options: SyncOptions
+        sourceCalendarId: String, targetCalendarId: String, from: Date, to: Date, options: SyncOptions, marker: String? = nil
     ) throws -> SyncSummary {
         guard sourceCalendarId != targetCalendarId else { throw SyncError.sameCalendar }
         guard backend.calendarExists(sourceCalendarId) else { throw SyncError.calendarNotFound(sourceCalendarId) }
@@ -96,7 +102,7 @@ public final class CalendarSyncEngine {
         let blockName = options.blockEventName.trimmingCharacters(in: .whitespaces).isEmpty
             ? "Busy" : options.blockEventName
         let blockLocation = options.blockEventLocation.flatMap { $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0 }
-        let marker = Self.marker(mode: options.mode, sourceCalendarId: sourceCalendarId, targetCalendarId: targetCalendarId)
+        let marker = marker ?? Self.marker(mode: options.mode, sourceCalendarId: sourceCalendarId, targetCalendarId: targetCalendarId)
         let sourceName = backend.calendarDisplayName(sourceCalendarId) ?? sourceCalendarId
 
         var summary = SyncSummary()

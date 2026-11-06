@@ -58,7 +58,7 @@ private struct GeneralSettingsTab: View {
                     Text("No calendars available.").foregroundStyle(.secondary)
                 }
                 ForEach(model.calendars) { calendar in
-                    Toggle(isOn: model.calendarSelection(\.countdownCalendarIds, contains: calendar.id)) {
+                    Toggle(isOn: model.calendarSelection(\.countdownCalendars, contains: calendar)) {
                         CalendarLabel(calendar: calendar)
                     }
                 }
@@ -137,14 +137,14 @@ private struct MCPSettingsTab: View {
                     HStack {
                         Text(selectionSummary).foregroundStyle(.secondary)
                         Spacer()
-                        Button("Select All") { model.updateConfig { $0.mcpCalendarIds = nil } }
-                            .disabled(model.config.mcpCalendarIds == nil)
-                        Button("Select None") { model.updateConfig { $0.mcpCalendarIds = [] } }
-                            .disabled(model.config.mcpCalendarIds?.isEmpty == true)
+                        Button("Select All") { model.updateConfig { $0.mcpCalendars = nil } }
+                            .disabled(model.config.mcpCalendars == nil)
+                        Button("Select None") { model.updateConfig { $0.mcpCalendars = [] } }
+                            .disabled(model.config.mcpCalendars?.isEmpty == true)
                     }
                 }
                 ForEach(model.calendars) { calendar in
-                    Toggle(isOn: model.calendarSelection(\.mcpCalendarIds, contains: calendar.id)) {
+                    Toggle(isOn: model.calendarSelection(\.mcpCalendars, contains: calendar)) {
                         CalendarLabel(calendar: calendar)
                     }
                 }
@@ -161,7 +161,7 @@ private struct MCPSettingsTab: View {
     }
 
     private var selectionSummary: String {
-        guard let ids = model.config.mcpCalendarIds else { return "All calendars" }
+        guard let ids = model.config.mcpCalendarScope else { return "All calendars" }
         let count = model.calendars.filter { ids.contains($0.id) }.count
         return "\(count) of \(model.calendars.count) calendars"
     }
@@ -296,9 +296,9 @@ private struct RuleRow: View {
             .controlSize(.small)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(name(rule.sourceCalendarId, fallback: rule.sourceCalendarName))
+                Text(name(rule.source))
                     + Text("  →  ").foregroundStyle(.secondary)
-                    + Text(name(rule.targetCalendarId, fallback: rule.targetCalendarName))
+                    + Text(name(rule.target))
                 Text(details).font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
@@ -317,8 +317,9 @@ private struct RuleRow: View {
         .opacity(rule.enabled ? 1 : 0.6)
     }
 
-    private func name(_ id: String, fallback: String) -> String {
-        model.calendars.first { $0.id == id }?.displayName ?? (fallback.isEmpty ? "Missing calendar" : fallback)
+    private func name(_ reference: CalendarReference) -> String {
+        if let calendar = model.calendars.first(where: { $0.id == reference.id }) { return calendar.displayName }
+        return reference.title.isEmpty ? "Missing calendar" : "\(reference.displayName) (missing)"
     }
 
     private var details: String {
@@ -355,13 +356,13 @@ private struct RuleEditor: View {
             Text(isNew ? "New Sync Rule" : "Edit Sync Rule").font(.title3.bold())
             Form {
                 Toggle("Enabled", isOn: $rule.enabled)
-                Picker("Copy busy time from", selection: $rule.sourceCalendarId) {
+                Picker("Copy busy time from", selection: calendar(\.source)) {
                     Text("Choose a calendar…").tag("")
                     ForEach(model.calendars) { calendar in
                         Text(calendar.displayName).tag(calendar.id)
                     }
                 }
-                Picker("Into calendar", selection: $rule.targetCalendarId) {
+                Picker("Into calendar", selection: calendar(\.target)) {
                     Text("Choose a calendar…").tag("")
                     ForEach(model.calendars.filter(\.writable)) { calendar in
                         Text(calendar.displayName).tag(calendar.id)
@@ -392,8 +393,6 @@ private struct RuleEditor: View {
                     .keyboardShortcut(.cancelAction)
                 Button("Save") {
                     var saved = rule
-                    saved.sourceCalendarName = model.calendars.first { $0.id == saved.sourceCalendarId }?.displayName ?? saved.sourceCalendarName
-                    saved.targetCalendarName = model.calendars.first { $0.id == saved.targetCalendarId }?.displayName ?? saved.targetCalendarName
                     if saved.blockEventName.trimmingCharacters(in: .whitespaces).isEmpty { saved.blockEventName = "Busy" }
                     onSave(saved)
                     dismiss()
@@ -404,6 +403,16 @@ private struct RuleEditor: View {
         }
         .padding(20)
         .frame(width: 560)
+    }
+
+    /// Picker selection by id that stores the calendar's title and account along with it.
+    private func calendar(_ keyPath: WritableKeyPath<SyncRule, CalendarReference>) -> Binding<String> {
+        Binding(
+            get: { rule[keyPath: keyPath].id },
+            set: { id in
+                rule[keyPath: keyPath] = model.calendars.first { $0.id == id }.map(CalendarReference.init) ?? CalendarReference(id: id)
+            }
+        )
     }
 
     private var validationMessage: String? {

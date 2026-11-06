@@ -96,6 +96,8 @@ public protocol CalendarBackend: AnyObject {
     func calendarExists(_ calendarId: String) -> Bool
     func calendarIsWritable(_ calendarId: String) -> Bool
     func calendarDisplayName(_ calendarId: String) -> String?
+    /// Every event calendar, so stored calendars can be found again by title and account.
+    func calendarReferences() -> [CalendarReference]
     func events(calendarId: String, from: Date, to: Date) throws -> [CalendarEventRecord]
     func createEvent(_ draft: EventDraft, calendarId: String) throws
     func updateEvent(id: String, title: String, location: String?) throws

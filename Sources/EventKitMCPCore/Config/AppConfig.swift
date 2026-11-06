@@ -3,10 +3,11 @@ import Foundation
 public struct SyncRule: Codable, Sendable, Equatable, Identifiable {
     public var id: UUID
     public var enabled: Bool
-    public var sourceCalendarId: String
-    public var sourceCalendarName: String
-    public var targetCalendarId: String
-    public var targetCalendarName: String
+    public var source: CalendarReference
+    public var target: CalendarReference
+    /// Hash used in this rule's sync marker. nil derives it from the calendar ids; set when the ids
+    /// change so the events the rule created before keep matching.
+    public var markerKey: String?
     public var mode: SyncMode
     public var outsideWorkHoursOnly: Bool
     public var workDayStartHour: Int
@@ -15,17 +16,16 @@ public struct SyncRule: Codable, Sendable, Equatable, Identifiable {
     public var blockEventLocation: String
 
     public init(
-        id: UUID = UUID(), enabled: Bool = true, sourceCalendarId: String = "", sourceCalendarName: String = "",
-        targetCalendarId: String = "", targetCalendarName: String = "", mode: SyncMode = .block,
+        id: UUID = UUID(), enabled: Bool = true, source: CalendarReference = CalendarReference(id: ""),
+        target: CalendarReference = CalendarReference(id: ""), markerKey: String? = nil, mode: SyncMode = .block,
         outsideWorkHoursOnly: Bool = false, workDayStartHour: Int = 7, workDayEndHour: Int = 18,
         blockEventName: String = "Busy", blockEventLocation: String = ""
     ) {
         self.id = id
         self.enabled = enabled
-        self.sourceCalendarId = sourceCalendarId
-        self.sourceCalendarName = sourceCalendarName
-        self.targetCalendarId = targetCalendarId
-        self.targetCalendarName = targetCalendarName
+        self.source = source
+        self.target = target
+        self.markerKey = markerKey
         self.mode = mode
         self.outsideWorkHoursOnly = outsideWorkHoursOnly
         self.workDayStartHour = workDayStartHour
@@ -34,15 +34,26 @@ public struct SyncRule: Codable, Sendable, Equatable, Identifiable {
         self.blockEventLocation = blockEventLocation
     }
 
+    /// Keys of configs written before calendars were stored with their title and account.
+    private enum LegacyKeys: String, CodingKey {
+        case sourceCalendarId, sourceCalendarName, targetCalendarId, targetCalendarName
+    }
+
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        let legacy = try decoder.container(keyedBy: LegacyKeys.self)
         let defaults = SyncRule()
         id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
         enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? defaults.enabled
-        sourceCalendarId = try c.decodeIfPresent(String.self, forKey: .sourceCalendarId) ?? ""
-        sourceCalendarName = try c.decodeIfPresent(String.self, forKey: .sourceCalendarName) ?? ""
-        targetCalendarId = try c.decodeIfPresent(String.self, forKey: .targetCalendarId) ?? ""
-        targetCalendarName = try c.decodeIfPresent(String.self, forKey: .targetCalendarName) ?? ""
+        source = try c.decodeIfPresent(CalendarReference.self, forKey: .source) ?? CalendarReference(
+            id: try legacy.decodeIfPresent(String.self, forKey: .sourceCalendarId) ?? "",
+            displayName: try legacy.decodeIfPresent(String.self, forKey: .sourceCalendarName) ?? ""
+        )
+        target = try c.decodeIfPresent(CalendarReference.self, forKey: .target) ?? CalendarReference(
+            id: try legacy.decodeIfPresent(String.self, forKey: .targetCalendarId) ?? "",
+            displayName: try legacy.decodeIfPresent(String.self, forKey: .targetCalendarName) ?? ""
+        )
+        markerKey = try c.decodeIfPresent(String.self, forKey: .markerKey)
         mode = try c.decodeIfPresent(SyncMode.self, forKey: .mode) ?? defaults.mode
         outsideWorkHoursOnly = try c.decodeIfPresent(Bool.self, forKey: .outsideWorkHoursOnly) ?? defaults.outsideWorkHoursOnly
         workDayStartHour = try c.decodeIfPresent(Int.self, forKey: .workDayStartHour) ?? defaults.workDayStartHour
@@ -50,6 +61,9 @@ public struct SyncRule: Codable, Sendable, Equatable, Identifiable {
         blockEventName = try c.decodeIfPresent(String.self, forKey: .blockEventName) ?? defaults.blockEventName
         blockEventLocation = try c.decodeIfPresent(String.self, forKey: .blockEventLocation) ?? defaults.blockEventLocation
     }
+
+    public var sourceCalendarId: String { source.id }
+    public var targetCalendarId: String { target.id }
 
     public var options: SyncOptions {
         SyncOptions(
@@ -62,13 +76,17 @@ public struct SyncRule: Codable, Sendable, Equatable, Identifiable {
         )
     }
 
+    var effectiveMarkerKey: String {
+        markerKey ?? CalendarSyncEngine.ruleHash(sourceCalendarId, targetCalendarId)
+    }
+
     public var marker: String {
-        CalendarSyncEngine.marker(mode: mode, sourceCalendarId: sourceCalendarId, targetCalendarId: targetCalendarId)
+        CalendarSyncEngine.marker(mode: mode, key: effectiveMarkerKey)
     }
 
     public var label: String {
-        let source = sourceCalendarName.isEmpty ? sourceCalendarId : sourceCalendarName
-        let target = targetCalendarName.isEmpty ? targetCalendarId : targetCalendarName
+        let source = source.title.isEmpty ? sourceCalendarId : source.displayName
+        let target = target.title.isEmpty ? targetCalendarId : target.displayName
         return "\(source) → \(target) (\(mode.rawValue))"
     }
 }
@@ -79,12 +97,12 @@ public struct AppConfig: Codable, Sendable, Equatable {
     public var port: Int
     public var mcpServerEnabled: Bool
     /// Calendars MCP clients can see and change; nil means all calendars.
-    public var mcpCalendarIds: [String]?
+    public var mcpCalendars: [CalendarReference]?
     public var autoSyncEnabled: Bool
     public var syncDaysAhead: Int
     public var syncRules: [SyncRule]
     /// Calendars considered for the menu bar countdown; nil means all calendars.
-    public var countdownCalendarIds: [String]?
+    public var countdownCalendars: [CalendarReference]?
     public var countdownWarningMinutes: Int
     public var countdownCriticalMinutes: Int
     /// Show time to the next meeting even when it is further away than the warning threshold.
@@ -94,35 +112,54 @@ public struct AppConfig: Codable, Sendable, Equatable {
     public init() {
         port = Self.defaultPort
         mcpServerEnabled = true
-        mcpCalendarIds = nil
+        mcpCalendars = nil
         autoSyncEnabled = true
         syncDaysAhead = 90
         syncRules = []
-        countdownCalendarIds = nil
+        countdownCalendars = nil
         countdownWarningMinutes = 10
         countdownCriticalMinutes = 4
         alwaysShowNextMeeting = false
         showMeetingTitleInMenuBar = false
     }
 
+    /// Keys of configs written before calendars were stored with their title and account.
+    private enum LegacyKeys: String, CodingKey {
+        case mcpCalendarIds, countdownCalendarIds
+    }
+
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        let legacy = try decoder.container(keyedBy: LegacyKeys.self)
         let d = AppConfig()
         port = try c.decodeIfPresent(Int.self, forKey: .port) ?? d.port
         mcpServerEnabled = try c.decodeIfPresent(Bool.self, forKey: .mcpServerEnabled) ?? d.mcpServerEnabled
-        mcpCalendarIds = try c.decodeIfPresent([String].self, forKey: .mcpCalendarIds)
         autoSyncEnabled = try c.decodeIfPresent(Bool.self, forKey: .autoSyncEnabled) ?? d.autoSyncEnabled
         syncDaysAhead = try c.decodeIfPresent(Int.self, forKey: .syncDaysAhead) ?? d.syncDaysAhead
         syncRules = try c.decodeIfPresent([SyncRule].self, forKey: .syncRules) ?? d.syncRules
-        countdownCalendarIds = try c.decodeIfPresent([String].self, forKey: .countdownCalendarIds)
         countdownWarningMinutes = try c.decodeIfPresent(Int.self, forKey: .countdownWarningMinutes) ?? d.countdownWarningMinutes
         countdownCriticalMinutes = try c.decodeIfPresent(Int.self, forKey: .countdownCriticalMinutes) ?? d.countdownCriticalMinutes
         alwaysShowNextMeeting = try c.decodeIfPresent(Bool.self, forKey: .alwaysShowNextMeeting) ?? d.alwaysShowNextMeeting
         showMeetingTitleInMenuBar = try c.decodeIfPresent(Bool.self, forKey: .showMeetingTitleInMenuBar) ?? d.showMeetingTitleInMenuBar
+
+        // Old configs stored bare ids; borrow names from sync rules that use the same calendars.
+        var known: [String: CalendarReference] = [:]
+        for reference in syncRules.flatMap({ [$0.source, $0.target] }) where !reference.title.isEmpty {
+            known[reference.id] = known[reference.id] ?? reference
+        }
+        func references(_ key: CodingKeys, legacy legacyKey: LegacyKeys) throws -> [CalendarReference]? {
+            if let references = try c.decodeIfPresent([CalendarReference].self, forKey: key) { return references }
+            return try legacy.decodeIfPresent([String].self, forKey: legacyKey)?.map { known[$0] ?? CalendarReference(id: $0) }
+        }
+        mcpCalendars = try references(.mcpCalendars, legacy: .mcpCalendarIds)
+        countdownCalendars = try references(.countdownCalendars, legacy: .countdownCalendarIds)
     }
 
-    /// `mcpCalendarIds` as a set for lookups; nil means all calendars.
-    public var mcpCalendarScope: Set<String>? { mcpCalendarIds.map(Set.init) }
+    /// Ids of `mcpCalendars` as a set for lookups; nil means all calendars.
+    public var mcpCalendarScope: Set<String>? { mcpCalendars.map { Set($0.map(\.id)) } }
+
+    /// Ids of `countdownCalendars`; nil means all calendars.
+    public var countdownCalendarIds: [String]? { countdownCalendars?.map(\.id) }
 }
 
 /// Thread-safe JSON persistence of `AppConfig` in ~/Library/Application Support/EventKitMCP/config.json.
@@ -166,6 +203,14 @@ public final class ConfigStore: @unchecked Sendable {
             NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
         }
         return copy
+    }
+
+    /// Applies `AppConfig.reconcileCalendars(with:)`, saving when anything changed.
+    @discardableResult
+    public func reconcileCalendars(with calendars: [CalendarReference]) -> [CalendarReferenceChange] {
+        var changes: [CalendarReferenceChange] = []
+        update { changes = $0.reconcileCalendars(with: calendars) }
+        return changes
     }
 
     private func save(_ config: AppConfig) {

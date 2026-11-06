@@ -528,15 +528,12 @@ public enum CalendarTools {
 
         func applyCalendars(_ args: ToolArguments, to rule: inout SyncRule) throws {
             if let source = args.string("source_calendar") {
-                let info = try store.calendarInfo(reference: source, allowed: scope())
-                rule.sourceCalendarId = info.id
-                rule.sourceCalendarName = info.displayName
+                rule.source = CalendarReference(try store.calendarInfo(reference: source, allowed: scope()))
             }
             if let target = args.string("target_calendar") {
                 let info = try store.calendarInfo(reference: target, allowed: scope())
                 guard info.writable else { throw ToolError("Target calendar is read-only: \(info.displayName)") }
-                rule.targetCalendarId = info.id
-                rule.targetCalendarName = info.displayName
+                rule.target = CalendarReference(info)
             }
             guard !rule.sourceCalendarId.isEmpty, !rule.targetCalendarId.isEmpty else {
                 throw ToolError("Both `source_calendar` and `target_calendar` are required.")

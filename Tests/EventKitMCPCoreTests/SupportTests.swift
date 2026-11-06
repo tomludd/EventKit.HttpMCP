@@ -146,19 +146,19 @@ struct ConfigTests {
         #expect(config.syncRules.first?.blockEventName == "Busy")
         #expect(config.syncRules.first?.enabled == true)
         #expect(config.mcpServerEnabled == true)
-        #expect(config.mcpCalendarIds == nil)
+        #expect(config.mcpCalendars == nil)
         #expect(config.mcpCalendarScope == nil)
     }
 
     @Test func roundTripsMCPOptions() throws {
         var config = AppConfig()
         config.mcpServerEnabled = false
-        config.mcpCalendarIds = ["work", "home"]
+        config.mcpCalendars = [CalendarReference(id: "work", title: "Calendar", account: "work@example.com"), CalendarReference(id: "home")]
         let decoded = try JSONDecoder().decode(AppConfig.self, from: JSONEncoder().encode(config))
         #expect(decoded == config)
         #expect(decoded.mcpCalendarScope == ["work", "home"])
 
-        config.mcpCalendarIds = []
+        config.mcpCalendars = []
         #expect(try JSONDecoder().decode(AppConfig.self, from: JSONEncoder().encode(config)).mcpCalendarScope == [])
     }
 

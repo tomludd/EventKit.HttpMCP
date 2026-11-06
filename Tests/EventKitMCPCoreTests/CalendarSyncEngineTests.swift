@@ -29,6 +29,9 @@ final class InMemoryBackend: CalendarBackend {
     func calendarExists(_ calendarId: String) -> Bool { calendars[calendarId] != nil }
     func calendarIsWritable(_ calendarId: String) -> Bool { calendars[calendarId]?.writable ?? false }
     func calendarDisplayName(_ calendarId: String) -> String? { calendars[calendarId]?.name }
+    func calendarReferences() -> [CalendarReference] {
+        calendars.map { CalendarReference(id: $0.key, displayName: $0.value.name) }.sorted { $0.id < $1.id }
+    }
 
     func events(calendarId: String, from: Date, to: Date) throws -> [CalendarEventRecord] {
         events.filter { $0.calendarId == calendarId && $0.end > from && $0.start < to }

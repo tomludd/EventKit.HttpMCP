@@ -107,14 +107,23 @@ final class AppModel: ObservableObject {
 
     /// Whether a calendar is in a selection where nil means "all calendars". nil is materialized
     /// on the first change and restored once every calendar is selected again.
-    func calendarSelection(_ keyPath: WritableKeyPath<AppConfig, [String]?>, contains id: String) -> Binding<Bool> {
+    func calendarSelection(_ keyPath: WritableKeyPath<AppConfig, [CalendarReference]?>, contains calendar: CalendarInfo) -> Binding<Bool> {
         Binding(
-            get: { self.config[keyPath: keyPath]?.contains(id) ?? true },
+            get: { self.config[keyPath: keyPath]?.contains { $0.id == calendar.id } ?? true },
             set: { included in
-                let all = self.calendars.map(\.id)
-                var selected = Set(self.config[keyPath: keyPath] ?? all)
-                if included { selected.insert(id) } else { selected.remove(id) }
-                let value: [String]? = Set(all).isSubset(of: selected) ? nil : all.filter(selected.contains)
+                let stored = self.config[keyPath: keyPath]
+                let all = Set(self.calendars.map(\.id))
+                var selected = stored.map { Set($0.map(\.id)) } ?? all
+                if included { selected.insert(calendar.id) } else { selected.remove(calendar.id) }
+                let value: [CalendarReference]?
+                if all.isSubset(of: selected) {
+                    value = nil
+                } else {
+                    // Keep selected calendars that are missing right now (account being re-added) so they
+                    // can be found again by name.
+                    let missing = (stored ?? []).filter { !all.contains($0.id) && !$0.title.isEmpty }
+                    value = self.calendars.filter { selected.contains($0.id) }.map(CalendarReference.init) + missing
+                }
                 self.updateConfig { $0[keyPath: keyPath] = value }
             }
         )
@@ -163,8 +172,11 @@ final class AppModel: ObservableObject {
     func reloadCalendars() {
         guard EventKitCalendarStore.hasFullAccess else { return }
         let store = self.store
+        let sync = self.sync
         Task.detached {
             let calendars = (try? store.calendars()) ?? []
+            // Calendars get new ids when their account is removed and added again; relink them by name.
+            sync.reconcileCalendars()
             await MainActor.run { self.calendars = calendars }
         }
     }

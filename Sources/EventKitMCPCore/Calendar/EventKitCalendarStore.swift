@@ -327,6 +327,15 @@ public final class EventKitCalendarStore: CalendarBackend, @unchecked Sendable {
         onQueue { store.calendar(withIdentifier: calendarId).map(Self.displayName) }
     }
 
+    public func calendarReferences() -> [CalendarReference] {
+        guard Self.hasFullAccess else { return [] }
+        return onQueue {
+            store.calendars(for: .event).map {
+                CalendarReference(id: $0.calendarIdentifier, title: $0.title, account: $0.source?.title ?? "")
+            }
+        }
+    }
+
     public func events(calendarId: String, from: Date, to: Date) throws -> [CalendarEventRecord] {
         try ensureAccess()
         return try onQueue {

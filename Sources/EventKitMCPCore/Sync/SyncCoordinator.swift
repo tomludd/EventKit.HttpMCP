@@ -110,6 +110,7 @@ public final class SyncCoordinator: @unchecked Sendable {
         guard started else { return false }
         notify()
         runQueue.async { [self] in
+            reconcileCalendars()
             _ = performRun(rules: configStore.config.syncRules.filter(\.enabled), trigger: trigger)
         }
         return true
@@ -120,6 +121,7 @@ public final class SyncCoordinator: @unchecked Sendable {
         runQueue.sync {
             locked { running = true }
             notify()
+            reconcileCalendars()
             let rules = configStore.config.syncRules.filter { rule in
                 if let ruleIds { return ruleIds.contains(rule.id) }
                 return rule.enabled
@@ -135,6 +137,21 @@ public final class SyncCoordinator: @unchecked Sendable {
             notify()
             return performRun(rules: [rule], trigger: "mcp", from: from, to: to).first!
         }
+    }
+
+    /// Points stored calendars that got a new id (e.g. after their account was removed and added
+    /// again) at the calendar with the same title and account, and logs what was relinked.
+    @discardableResult
+    public func reconcileCalendars() -> [CalendarReferenceChange] {
+        let changes = configStore.reconcileCalendars(with: backend.calendarReferences())
+        for change in changes {
+            NSLog("EventKitMCP: calendar \(change.calendar) moved from id \(change.oldId) to \(change.newId)")
+            addLog(SyncLogEntry(
+                timestamp: Date(), rule: change.calendar, status: "RELINK",
+                message: "Calendar has a new id; settings now point at it"
+            ))
+        }
+        return changes
     }
 
     public func purge(calendarId: String, from: Date, to: Date, marker: String?, dryRun: Bool) throws -> Int {
@@ -178,7 +195,8 @@ public final class SyncCoordinator: @unchecked Sendable {
                     targetCalendarId: rule.targetCalendarId,
                     from: start,
                     to: end,
-                    options: rule.options
+                    options: rule.options,
+                    marker: rule.marker
                 )
                 results.append(SyncRuleResult(ruleId: rule.id.uuidString, rule: label, status: "ok", summary: summary))
                 addLog(SyncLogEntry(timestamp: Date(), rule: label, status: summary.errors > 0 ? "WARN" : "OK", message: summary.description))
@@ -193,8 +211,8 @@ public final class SyncCoordinator: @unchecked Sendable {
     }
 
     public func currentLabel(for rule: SyncRule) -> String {
-        let source = backend.calendarDisplayName(rule.sourceCalendarId) ?? rule.sourceCalendarName
-        let target = backend.calendarDisplayName(rule.targetCalendarId) ?? rule.targetCalendarName
+        let source = backend.calendarDisplayName(rule.sourceCalendarId) ?? rule.source.displayName
+        let target = backend.calendarDisplayName(rule.targetCalendarId) ?? rule.target.displayName
         return "\(source) → \(target) (\(rule.mode.rawValue))"
     }
 
