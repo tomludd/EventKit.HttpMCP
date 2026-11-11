@@ -385,11 +385,18 @@ public final class EventKitCalendarStore: CalendarBackend, @unchecked Sendable {
         }
     }
 
-    public func updateEvent(id: String, title: String, location: String?) throws {
+    public func calendarSupportsOutOfOffice(_ calendarId: String) -> Bool {
+        onQueue { store.calendar(withIdentifier: calendarId)?.supportedEventAvailabilities.contains(.unavailable) ?? false }
+    }
+
+    public func updateEvent(id: String, title: String, location: String?, availability: EventAvailability?) throws {
         try onQueue {
             let event = try findEvent(id: id)
             event.title = title
             event.location = location
+            if let availability, !event.calendar.supportedEventAvailabilities.isEmpty {
+                event.availability = Self.ekAvailability(availability)
+            }
             try store.save(event, span: .thisEvent, commit: false)
         }
     }

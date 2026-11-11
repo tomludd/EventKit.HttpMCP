@@ -9,17 +9,22 @@ public struct SyncRule: Codable, Sendable, Equatable, Identifiable {
     /// change so the events the rule created before keep matching.
     public var markerKey: String?
     public var mode: SyncMode
-    public var outsideWorkHoursOnly: Bool
+    public var hoursFilter: HoursFilter
+    /// Days of the week whose events sync; nil means every day.
+    public var days: Set<Weekday>?
+    /// Start and end of the hours `hoursFilter` uses. Named after the working day they first meant.
     public var workDayStartHour: Int
     public var workDayEndHour: Int
     public var blockEventName: String
     public var blockEventLocation: String
+    /// Block events show as Out of Office instead of Busy.
+    public var blockAsOutOfOffice: Bool
 
     public init(
         id: UUID = UUID(), enabled: Bool = true, source: CalendarReference = CalendarReference(id: ""),
         target: CalendarReference = CalendarReference(id: ""), markerKey: String? = nil, mode: SyncMode = .block,
-        outsideWorkHoursOnly: Bool = false, workDayStartHour: Int = 7, workDayEndHour: Int = 18,
-        blockEventName: String = "Busy", blockEventLocation: String = ""
+        hoursFilter: HoursFilter = .any, days: Set<Weekday>? = nil, workDayStartHour: Int = 7, workDayEndHour: Int = 18,
+        blockEventName: String = "Busy", blockEventLocation: String = "", blockAsOutOfOffice: Bool = false
     ) {
         self.id = id
         self.enabled = enabled
@@ -27,16 +32,24 @@ public struct SyncRule: Codable, Sendable, Equatable, Identifiable {
         self.target = target
         self.markerKey = markerKey
         self.mode = mode
-        self.outsideWorkHoursOnly = outsideWorkHoursOnly
+        self.hoursFilter = hoursFilter
+        self.days = days
         self.workDayStartHour = workDayStartHour
         self.workDayEndHour = workDayEndHour
         self.blockEventName = blockEventName
         self.blockEventLocation = blockEventLocation
+        self.blockAsOutOfOffice = blockAsOutOfOffice
     }
 
-    /// Keys of configs written before calendars were stored with their title and account.
+    private enum CodingKeys: String, CodingKey {
+        case id, enabled, source, target, markerKey, mode, hoursFilter, days, workDayStartHour, workDayEndHour
+        case blockEventName, blockEventLocation, blockAsOutOfOffice
+    }
+
+    /// Keys of configs written before calendars were stored with their title and account, and before
+    /// the hours filter could be "within".
     private enum LegacyKeys: String, CodingKey {
-        case sourceCalendarId, sourceCalendarName, targetCalendarId, targetCalendarName
+        case sourceCalendarId, sourceCalendarName, targetCalendarId, targetCalendarName, outsideWorkHoursOnly
     }
 
     public init(from decoder: Decoder) throws {
@@ -55,11 +68,34 @@ public struct SyncRule: Codable, Sendable, Equatable, Identifiable {
         )
         markerKey = try c.decodeIfPresent(String.self, forKey: .markerKey)
         mode = try c.decodeIfPresent(SyncMode.self, forKey: .mode) ?? defaults.mode
-        outsideWorkHoursOnly = try c.decodeIfPresent(Bool.self, forKey: .outsideWorkHoursOnly) ?? defaults.outsideWorkHoursOnly
+        hoursFilter = try c.decodeIfPresent(HoursFilter.self, forKey: .hoursFilter)
+            ?? (try legacy.decodeIfPresent(Bool.self, forKey: .outsideWorkHoursOnly) == true ? .outside : defaults.hoursFilter)
+        days = try c.decodeIfPresent([Weekday].self, forKey: .days).map(Set.init)
         workDayStartHour = try c.decodeIfPresent(Int.self, forKey: .workDayStartHour) ?? defaults.workDayStartHour
         workDayEndHour = try c.decodeIfPresent(Int.self, forKey: .workDayEndHour) ?? defaults.workDayEndHour
         blockEventName = try c.decodeIfPresent(String.self, forKey: .blockEventName) ?? defaults.blockEventName
         blockEventLocation = try c.decodeIfPresent(String.self, forKey: .blockEventLocation) ?? defaults.blockEventLocation
+        blockAsOutOfOffice = try c.decodeIfPresent(Bool.self, forKey: .blockAsOutOfOffice) ?? defaults.blockAsOutOfOffice
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(enabled, forKey: .enabled)
+        try c.encode(source, forKey: .source)
+        try c.encode(target, forKey: .target)
+        try c.encodeIfPresent(markerKey, forKey: .markerKey)
+        try c.encode(mode, forKey: .mode)
+        try c.encode(hoursFilter, forKey: .hoursFilter)
+        try c.encodeIfPresent(days?.sorted { $0.number < $1.number }, forKey: .days)
+        try c.encode(workDayStartHour, forKey: .workDayStartHour)
+        try c.encode(workDayEndHour, forKey: .workDayEndHour)
+        try c.encode(blockEventName, forKey: .blockEventName)
+        try c.encode(blockEventLocation, forKey: .blockEventLocation)
+        try c.encode(blockAsOutOfOffice, forKey: .blockAsOutOfOffice)
+        // Read by versions before `hoursFilter`, so "outside" rules survive a downgrade.
+        var legacy = encoder.container(keyedBy: LegacyKeys.self)
+        try legacy.encode(hoursFilter == .outside, forKey: .outsideWorkHoursOnly)
     }
 
     public var sourceCalendarId: String { source.id }
@@ -68,11 +104,13 @@ public struct SyncRule: Codable, Sendable, Equatable, Identifiable {
     public var options: SyncOptions {
         SyncOptions(
             mode: mode,
-            outsideWorkHoursOnly: outsideWorkHoursOnly,
+            hoursFilter: hoursFilter,
+            days: days,
             workDayStartHour: workDayStartHour,
             workDayEndHour: workDayEndHour,
             blockEventName: blockEventName,
-            blockEventLocation: blockEventLocation
+            blockEventLocation: blockEventLocation,
+            blockAsOutOfOffice: blockAsOutOfOffice
         )
     }
 

@@ -100,7 +100,9 @@ public protocol CalendarBackend: AnyObject {
     func calendarReferences() -> [CalendarReference]
     func events(calendarId: String, from: Date, to: Date) throws -> [CalendarEventRecord]
     func createEvent(_ draft: EventDraft, calendarId: String) throws
-    func updateEvent(id: String, title: String, location: String?) throws
+    /// Whether events in the calendar can be shown as Out of Office (Google calendars, for one, cannot).
+    func calendarSupportsOutOfOffice(_ calendarId: String) -> Bool
+    func updateEvent(id: String, title: String, location: String?, availability: EventAvailability?) throws
     func deleteEvent(id: String) throws
     /// Persists changes made with the methods above.
     func commit() throws

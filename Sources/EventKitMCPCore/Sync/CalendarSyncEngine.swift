@@ -8,24 +8,61 @@ public enum SyncMode: String, Codable, Sendable, CaseIterable {
     case copy
 }
 
+/// A day of the week, stored by its three-letter code.
+public enum Weekday: String, Codable, Sendable, CaseIterable {
+    case sun, mon, tue, wed, thu, fri, sat
+
+    public static let workdays: Set<Weekday> = [.mon, .tue, .wed, .thu, .fri]
+
+    /// `Calendar.Component.weekday` numbering: Sunday is 1.
+    public var number: Int { Self.allCases.firstIndex(of: self)! + 1 }
+
+    public init?(number: Int) {
+        guard (1...7).contains(number) else { return nil }
+        self = Self.allCases[number - 1]
+    }
+
+    /// "mon", "Monday", "man" style input: the first three letters of the English name.
+    public init?(name: String) {
+        self.init(rawValue: String(name.lowercased().trimmingCharacters(in: .whitespaces).prefix(3)))
+    }
+}
+
+/// Which source events a rule syncs, by time of day (`workDayStartHour`–`workDayEndHour`).
+public enum HoursFilter: String, Codable, Sendable, CaseIterable {
+    /// Every event, whatever the time.
+    case any
+    /// Only events that start before or end after the hours, e.g. work meetings in the evening.
+    case outside
+    /// Only events that overlap the hours, e.g. personal appointments during the working day.
+    case within
+}
+
 public struct SyncOptions: Sendable, Equatable {
     public var mode: SyncMode
-    public var outsideWorkHoursOnly: Bool
+    public var hoursFilter: HoursFilter
+    /// Days of the week whose events sync; nil means every day.
+    public var days: Set<Weekday>?
     public var workDayStartHour: Int
     public var workDayEndHour: Int
     public var blockEventName: String
     public var blockEventLocation: String?
+    /// Block events show as Out of Office instead of Busy, where the target calendar supports it.
+    public var blockAsOutOfOffice: Bool
 
     public init(
-        mode: SyncMode = .block, outsideWorkHoursOnly: Bool = false, workDayStartHour: Int = 7,
-        workDayEndHour: Int = 18, blockEventName: String = "Busy", blockEventLocation: String? = nil
+        mode: SyncMode = .block, hoursFilter: HoursFilter = .any, days: Set<Weekday>? = nil, workDayStartHour: Int = 7,
+        workDayEndHour: Int = 18, blockEventName: String = "Busy", blockEventLocation: String? = nil,
+        blockAsOutOfOffice: Bool = false
     ) {
         self.mode = mode
-        self.outsideWorkHoursOnly = outsideWorkHoursOnly
+        self.hoursFilter = hoursFilter
+        self.days = days
         self.workDayStartHour = workDayStartHour
         self.workDayEndHour = workDayEndHour
         self.blockEventName = blockEventName
         self.blockEventLocation = blockEventLocation
+        self.blockAsOutOfOffice = blockAsOutOfOffice
     }
 }
 
@@ -89,8 +126,10 @@ public final class CalendarSyncEngine {
 
     /// `marker` defaults to `marker(mode:sourceCalendarId:targetCalendarId:)`; saved rules pass their own
     /// so events stay theirs when calendar ids change.
+    /// `cleanUpUntil` also deletes this rule's events from `to` up to that date, e.g. after the range got shorter.
     public func run(
-        sourceCalendarId: String, targetCalendarId: String, from: Date, to: Date, options: SyncOptions, marker: String? = nil
+        sourceCalendarId: String, targetCalendarId: String, from: Date, to: Date, options: SyncOptions, marker: String? = nil,
+        cleanUpUntil: Date? = nil
     ) throws -> SyncSummary {
         guard sourceCalendarId != targetCalendarId else { throw SyncError.sameCalendar }
         guard backend.calendarExists(sourceCalendarId) else { throw SyncError.calendarNotFound(sourceCalendarId) }
@@ -104,13 +143,17 @@ public final class CalendarSyncEngine {
         let blockLocation = options.blockEventLocation.flatMap { $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0 }
         let marker = marker ?? Self.marker(mode: options.mode, sourceCalendarId: sourceCalendarId, targetCalendarId: targetCalendarId)
         let sourceName = backend.calendarDisplayName(sourceCalendarId) ?? sourceCalendarId
+        // Only compared against existing blocks where Out of Office is possible: other calendars may
+        // report a different availability than was saved, which would update the blocks on every run.
+        let targetSupportsOutOfOffice = backend.calendarSupportsOutOfOffice(targetCalendarId)
 
         var summary = SyncSummary()
 
         let sourceEvents = try backend.events(calendarId: sourceCalendarId, from: from, to: to)
             .filter(shouldSync)
-            .filter { !options.outsideWorkHoursOnly || isOutsideWorkHours($0, options) }
-        let targetEvents = try backend.events(calendarId: targetCalendarId, from: from, to: to)
+            .filter { matchesDays($0, options) && matchesHours($0, options) }
+        // Events of ours beyond `to` have no source in the range, so the pass below deletes them.
+        let targetEvents = try backend.events(calendarId: targetCalendarId, from: from, to: max(to, cleanUpUntil ?? to))
 
         let ours = targetEvents.filter { $0.notes?.contains(marker) == true }
         let realTargetSlots = Set(targetEvents.filter { $0.notes?.contains(marker) != true }.map(Slot.init))
@@ -145,11 +188,16 @@ public final class CalendarSyncEngine {
             if let existing = syncedByKey[sourceKey] {
                 if options.mode == .block {
                     let expectedTitle = isOutOfOffice ? "Out of Office" : blockName
+                    let expectedAvailability = blockAvailability(source, options, targetSupportsOutOfOffice: targetSupportsOutOfOffice)
                     let titleStale = existing.title != expectedTitle
                     let locationStale = blockLocation != nil && existing.location != blockLocation
-                    if titleStale || locationStale {
+                    let availabilityStale = targetSupportsOutOfOffice && existing.availability != expectedAvailability
+                    if titleStale || locationStale || availabilityStale {
                         do {
-                            try backend.updateEvent(id: existing.id, title: expectedTitle, location: blockLocation ?? existing.location)
+                            try backend.updateEvent(
+                                id: existing.id, title: expectedTitle, location: blockLocation ?? existing.location,
+                                availability: availabilityStale ? expectedAvailability : nil
+                            )
                             summary.updated += 1
                         } catch {
                             summary.errors += 1
@@ -190,7 +238,7 @@ public final class CalendarSyncEngine {
                     isAllDay: source.isAllDay,
                     location: blockLocation,
                     notes: "Blocked from \(sourceName)\n\(marker)",
-                    availability: isOutOfOffice ? .unavailable : .busy,
+                    availability: blockAvailability(source, options, targetSupportsOutOfOffice: targetSupportsOutOfOffice),
                     alertMinutesBefore: [],
                     timeZone: source.timeZone
                 )
@@ -242,14 +290,48 @@ public final class CalendarSyncEngine {
         }
     }
 
-    func isOutsideWorkHours(_ event: CalendarEventRecord, _ options: SyncOptions) -> Bool {
-        if event.isAllDay { return true }
+    /// Out of Office sources always block as Out of Office; others only when the rule asks for it and
+    /// the target calendar can show it, so they stay Busy rather than lose their availability.
+    func blockAvailability(_ source: CalendarEventRecord, _ options: SyncOptions, targetSupportsOutOfOffice: Bool) -> EventAvailability {
+        if source.availability == .unavailable { return .unavailable }
+        return options.blockAsOutOfOffice && targetSupportsOutOfOffice ? .unavailable : .busy
+    }
+
+    /// All-day and multi-day events pass both filters: they cover the hours and the time around them.
+    func matchesHours(_ event: CalendarEventRecord, _ options: SyncOptions) -> Bool {
+        if options.hoursFilter == .any || event.isAllDay { return true }
         let start = calendar.dateComponents([.hour, .minute], from: event.start)
         let end = calendar.dateComponents([.hour, .minute], from: event.end)
         let startMinutes = (start.hour ?? 0) * 60 + (start.minute ?? 0)
-        let endMinutes = (end.hour ?? 0) * 60 + (end.minute ?? 0)
-        if !calendar.isDate(event.start, inSameDayAs: event.end) { return true }
-        return startMinutes < options.workDayStartHour * 60 || endMinutes > options.workDayEndHour * 60
+        var endMinutes = (end.hour ?? 0) * 60 + (end.minute ?? 0)
+        if !calendar.isDate(event.start, inSameDayAs: event.end) {
+            // For "within", an event ending at midnight still belongs to the day it started. "outside"
+            // keeps counting it as outside, as it always has, so existing rules sync the same events.
+            let endsAtMidnight = endMinutes == 0
+                && calendar.isDate(event.end, inSameDayAs: calendar.date(byAdding: .day, value: 1, to: event.start)!)
+            guard options.hoursFilter == .within, endsAtMidnight else { return true }
+            endMinutes = 24 * 60
+        }
+        let windowStart = options.workDayStartHour * 60
+        let windowEnd = options.workDayEndHour * 60
+        switch options.hoursFilter {
+        case .any: return true
+        case .outside: return startMinutes < windowStart || endMinutes > windowEnd
+        case .within: return startMinutes < windowEnd && endMinutes > windowStart
+        }
+    }
+
+    /// Whether the event falls on one of the rule's days. All-day and multi-day events need to cover one.
+    func matchesDays(_ event: CalendarEventRecord, _ options: SyncOptions) -> Bool {
+        guard let days = options.days else { return true }
+        var day = calendar.startOfDay(for: event.start)
+        // Seven days cover every weekday.
+        for _ in 0..<7 {
+            if let weekday = Weekday(number: calendar.component(.weekday, from: day)), days.contains(weekday) { return true }
+            day = calendar.date(byAdding: .day, value: 1, to: day)!
+            if day >= event.end { break }
+        }
+        return false
     }
 
     // MARK: - Matching

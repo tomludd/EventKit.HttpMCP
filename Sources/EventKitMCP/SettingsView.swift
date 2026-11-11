@@ -54,15 +54,9 @@ private struct GeneralSettingsTab: View {
             }
 
             Section("Calendars in the menu") {
-                if model.calendars.isEmpty {
-                    Text("No calendars available.").foregroundStyle(.secondary)
-                }
-                ForEach(model.calendars) { calendar in
-                    Toggle(isOn: model.calendarSelection(\.countdownCalendars, contains: calendar)) {
-                        CalendarLabel(calendar: calendar)
-                    }
-                }
+                CalendarSelectionSummary(selection: \.countdownCalendars)
             }
+            CalendarSelectionSections(selection: \.countdownCalendars)
 
             Section("Startup") {
                 Toggle("Launch at login", isOn: $launchAtLogin)
@@ -131,23 +125,7 @@ private struct MCPSettingsTab: View {
             }
 
             Section {
-                if model.calendars.isEmpty {
-                    Text("No calendars available.").foregroundStyle(.secondary)
-                } else {
-                    HStack {
-                        Text(selectionSummary).foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Select All") { model.updateConfig { $0.mcpCalendars = nil } }
-                            .disabled(model.config.mcpCalendars == nil)
-                        Button("Select None") { model.updateConfig { $0.mcpCalendars = [] } }
-                            .disabled(model.config.mcpCalendars?.isEmpty == true)
-                    }
-                }
-                ForEach(model.calendars) { calendar in
-                    Toggle(isOn: model.calendarSelection(\.mcpCalendars, contains: calendar)) {
-                        CalendarLabel(calendar: calendar)
-                    }
-                }
+                CalendarSelectionSummary(selection: \.mcpCalendars)
             } header: {
                 Text("Calendars available to MCP clients")
             } footer: {
@@ -155,15 +133,10 @@ private struct MCPSettingsTab: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            CalendarSelectionSections(selection: \.mcpCalendars)
         }
         .formStyle(.grouped)
         .onAppear { portText = String(model.config.port) }
-    }
-
-    private var selectionSummary: String {
-        guard let ids = model.config.mcpCalendarScope else { return "All calendars" }
-        let count = model.calendars.filter { ids.contains($0.id) }.count
-        return "\(count) of \(model.calendars.count) calendars"
     }
 
     private var parsedPort: Int? {
@@ -197,7 +170,7 @@ private struct SyncSettingsTab: View {
         Form {
             Section {
                 Toggle("Sync automatically every hour at :12, :27, :42 and :57", isOn: model.binding(\.autoSyncEnabled))
-                Stepper("Sync \(model.config.syncDaysAhead) days ahead", value: model.binding(\.syncDaysAhead), in: 1...365)
+                Stepper("Sync \(model.config.syncDaysAhead) days ahead", value: model.binding(\.syncDaysAhead), in: 1...SyncCoordinator.maxDaysAhead)
                 HStack {
                     Button("Sync Now") { model.syncNow() }
                         .disabled(model.isSyncing || model.config.syncRules.isEmpty)
@@ -210,20 +183,30 @@ private struct SyncSettingsTab: View {
                 }
             }
 
-            Section {
-                if model.config.syncRules.isEmpty {
+            if model.config.syncRules.isEmpty {
+                Section("Rules") {
                     Text("No rules yet. A rule blocks time in one calendar whenever you are busy in another, e.g. your work calendar → your personal calendar.")
                         .foregroundStyle(.secondary)
                 }
-                ForEach(model.config.syncRules) { rule in
-                    RuleRow(
-                        rule: rule,
-                        onEdit: { editingRule = rule },
-                        onRun: { model.runRule(rule) },
-                        onPurge: { ruleToPurge = rule },
-                        onDelete: { ruleToDelete = rule }
-                    )
+            }
+
+            ForEach(ruleGroups, id: \.source.id) { group in
+                Section {
+                    ForEach(group.rules) { rule in
+                        RuleRow(
+                            rule: rule,
+                            onEdit: { editingRule = rule },
+                            onRun: { model.runRule(rule) },
+                            onPurge: { ruleToPurge = rule },
+                            onDelete: { ruleToDelete = rule }
+                        )
+                    }
+                } header: {
+                    SourceHeader(source: group.source)
                 }
+            }
+
+            Section {
                 HStack {
                     Spacer()
                     Button {
@@ -233,8 +216,6 @@ private struct SyncSettingsTab: View {
                     }
                     .disabled(model.calendars.isEmpty)
                 }
-            } header: {
-                Text("Rules")
             } footer: {
                 Text("Block mode creates anonymous events (Out of Office stays Out of Office). Copy mode copies title and notes as Free. Created events are tagged [eventkit-sync:…] in their notes and are never synced again, so two-way rules are safe.")
                     .font(.caption)
@@ -271,6 +252,32 @@ private struct SyncSettingsTab: View {
             Text("Removes \(rule.mode == .block ? "block" : "copied") events created by “\(rule.label)” from today and \(model.config.syncDaysAhead) days ahead. They are recreated on the next run if the rule is still enabled.")
         }
     }
+
+    /// Rules grouped by source calendar, groups and rules in the order they were added.
+    private var ruleGroups: [(source: CalendarReference, rules: [SyncRule])] {
+        var groups: [(source: CalendarReference, rules: [SyncRule])] = []
+        for rule in model.config.syncRules {
+            if let index = groups.firstIndex(where: { $0.source.id == rule.source.id }) {
+                groups[index].rules.append(rule)
+            } else {
+                groups.append((rule.source, [rule]))
+            }
+        }
+        return groups
+    }
+}
+
+private struct SourceHeader: View {
+    @EnvironmentObject private var model: AppModel
+    let source: CalendarReference
+
+    var body: some View {
+        if let calendar = model.calendars.first(where: { $0.id == source.id }) {
+            CalendarLabel(calendar: calendar)
+        } else {
+            Text(source.title.isEmpty ? "Missing calendar" : "\(source.displayName) (missing)")
+        }
+    }
 }
 
 private struct RuleRow: View {
@@ -296,9 +303,7 @@ private struct RuleRow: View {
             .controlSize(.small)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(name(rule.source))
-                    + Text("  →  ").foregroundStyle(.secondary)
-                    + Text(name(rule.target))
+                Text("→  ").foregroundStyle(.secondary) + Text(name(rule.target))
                 Text(details).font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
@@ -322,18 +327,25 @@ private struct RuleRow: View {
         return reference.title.isEmpty ? "Missing calendar" : "\(reference.displayName) (missing)"
     }
 
+    private var hours: String {
+        "\(rule.workDayStartHour):00–\(rule.workDayEndHour):00"
+    }
+
     private var details: String {
         var parts: [String] = []
         switch rule.mode {
         case .block:
-            parts.append("Block as “\(rule.blockEventName)”")
+            parts.append("Block as “\(rule.blockEventName)”" + (rule.blockAsOutOfOffice ? " (Out of Office)" : ""))
             if !rule.blockEventLocation.isEmpty { parts.append("at \(rule.blockEventLocation)") }
         case .copy:
             parts.append("Copy title and notes")
         }
-        if rule.outsideWorkHoursOnly {
-            parts.append("only outside \(rule.workDayStartHour):00–\(rule.workDayEndHour):00")
+        switch rule.hoursFilter {
+        case .any: break
+        case .outside: parts.append("only outside \(hours)")
+        case .within: parts.append("only between \(hours)")
         }
+        if let days = rule.days { parts.append("on \(Weekday.describe(days))") }
         return parts.joined(separator: " · ")
     }
 }
@@ -356,30 +368,29 @@ private struct RuleEditor: View {
             Text(isNew ? "New Sync Rule" : "Edit Sync Rule").font(.title3.bold())
             Form {
                 Toggle("Enabled", isOn: $rule.enabled)
-                Picker("Copy busy time from", selection: calendar(\.source)) {
-                    Text("Choose a calendar…").tag("")
-                    ForEach(model.calendars) { calendar in
-                        Text(calendar.displayName).tag(calendar.id)
-                    }
-                }
-                Picker("Into calendar", selection: calendar(\.target)) {
-                    Text("Choose a calendar…").tag("")
-                    ForEach(model.calendars.filter(\.writable)) { calendar in
-                        Text(calendar.displayName).tag(calendar.id)
-                    }
-                }
+                CalendarMenuPicker(title: "Copy busy time from", calendars: model.calendars, reference: $rule.source)
+                CalendarMenuPicker(title: "Into calendar", calendars: model.calendars.filter(\.writable), reference: $rule.target)
                 Picker("Mode", selection: $rule.mode) {
                     Text("Block — anonymous busy events").tag(SyncMode.block)
                     Text("Copy — title and notes, shown as free").tag(SyncMode.copy)
                 }
                 if rule.mode == .block {
+                    Picker("Show as", selection: $rule.blockAsOutOfOffice) {
+                        Text("Busy").tag(false)
+                        Text("Out of Office").tag(true)
+                    }
                     TextField("Block title", text: $rule.blockEventName, prompt: Text("Busy"))
                     TextField("Block location", text: $rule.blockEventLocation, prompt: Text("None"))
                 }
-                Toggle("Only events outside working hours", isOn: $rule.outsideWorkHoursOnly)
-                if rule.outsideWorkHoursOnly {
-                    Stepper("Working day starts \(rule.workDayStartHour):00", value: $rule.workDayStartHour, in: 0...23)
-                    Stepper("Working day ends \(rule.workDayEndHour):00", value: $rule.workDayEndHour, in: 1...24)
+                WeekdayPicker(days: $rule.days)
+                Picker("Sync events", selection: $rule.hoursFilter) {
+                    Text("At any time").tag(HoursFilter.any)
+                    Text("Only outside these hours").tag(HoursFilter.outside)
+                    Text("Only between these hours").tag(HoursFilter.within)
+                }
+                if rule.hoursFilter != .any {
+                    Stepper("From \(rule.workDayStartHour):00", value: $rule.workDayStartHour, in: 0...23)
+                    Stepper("To \(rule.workDayEndHour):00", value: $rule.workDayEndHour, in: 1...24)
                 }
             }
             .formStyle(.grouped)
@@ -405,22 +416,88 @@ private struct RuleEditor: View {
         .frame(width: 560)
     }
 
-    /// Picker selection by id that stores the calendar's title and account along with it.
-    private func calendar(_ keyPath: WritableKeyPath<SyncRule, CalendarReference>) -> Binding<String> {
-        Binding(
-            get: { rule[keyPath: keyPath].id },
-            set: { id in
-                rule[keyPath: keyPath] = model.calendars.first { $0.id == id }.map(CalendarReference.init) ?? CalendarReference(id: id)
-            }
-        )
-    }
 
     private var validationMessage: String? {
         if rule.sourceCalendarId.isEmpty { return "Choose the calendar to copy busy time from." }
         if rule.targetCalendarId.isEmpty { return "Choose the calendar to create events in." }
         if rule.sourceCalendarId == rule.targetCalendarId { return "Source and target must be different calendars." }
-        if rule.outsideWorkHoursOnly && rule.workDayEndHour <= rule.workDayStartHour { return "Working day must end after it starts." }
+        if rule.days?.isEmpty == true { return "Choose at least one day." }
+        if rule.hoursFilter != .any && rule.workDayEndHour <= rule.workDayStartHour { return "The hours must end after they start." }
         return nil
+    }
+}
+
+/// Calendar picker whose menu is grouped by account and sorted by title. A Menu rather than a Picker,
+/// so the menu items can show just the title while the button still shows "Title (Account)".
+private struct CalendarMenuPicker: View {
+    let title: String
+    let calendars: [CalendarInfo]
+    @Binding var reference: CalendarReference
+
+    var body: some View {
+        LabeledContent(title) {
+            Menu(selectedName) {
+                ForEach(calendarsByAccount(calendars), id: \.account) { group in
+                    Section(group.account) {
+                        ForEach(group.calendars) { calendar in
+                            Toggle(calendar.title, isOn: Binding(
+                                get: { reference.id == calendar.id },
+                                set: { if $0 { reference = CalendarReference(calendar) } }
+                            ))
+                        }
+                    }
+                }
+            }
+            .fixedSize()
+        }
+    }
+
+    private var selectedName: String {
+        if reference.id.isEmpty { return "Choose a calendar…" }
+        if let calendar = calendars.first(where: { $0.id == reference.id }) { return calendar.displayName }
+        return reference.title.isEmpty ? "Missing calendar" : "\(reference.displayName) (missing)"
+    }
+
+}
+
+/// One toggle button per day of the week, in the order the user's calendar starts its week.
+private struct WeekdayPicker: View {
+    @Binding var days: Set<Weekday>?
+
+    var body: some View {
+        LabeledContent("Days") {
+            HStack(spacing: 4) {
+                ForEach(Weekday.localOrder, id: \.self) { day in
+                    Toggle(day.shortName, isOn: Binding(
+                        get: { days?.contains(day) ?? true },
+                        set: { on in
+                            var selected = days ?? Set(Weekday.allCases)
+                            if on { selected.insert(day) } else { selected.remove(day) }
+                            days = selected.count == Weekday.allCases.count ? nil : selected
+                        }
+                    ))
+                    .toggleStyle(.button)
+                }
+            }
+        }
+    }
+}
+
+extension Weekday {
+    /// Every day, starting at the user's first day of the week.
+    static var localOrder: [Weekday] {
+        let first = Calendar.current.firstWeekday
+        return (0..<7).compactMap { Weekday(number: (first - 1 + $0) % 7 + 1) }
+    }
+
+    var shortName: String { Calendar.current.shortStandaloneWeekdaySymbols[number - 1] }
+
+    /// "weekdays", "weekends" or the days listed in the user's week order.
+    static func describe(_ days: Set<Weekday>) -> String {
+        if days == workdays { return "weekdays" }
+        if days == [.sat, .sun] { return "weekends" }
+        if days.isEmpty { return "no days" }
+        return localOrder.filter(days.contains).map(\.shortName).joined(separator: ", ")
     }
 }
 
@@ -472,8 +549,70 @@ private struct SyncLogTab: View {
 
 // MARK: - Shared views
 
+/// Accounts in the order EventKit lists them, calendars within each sorted by title.
+private func calendarsByAccount(_ calendars: [CalendarInfo]) -> [(account: String, calendars: [CalendarInfo])] {
+    var groups: [(account: String, calendars: [CalendarInfo])] = []
+    for calendar in calendars {
+        let account = calendar.account.isEmpty ? "No account" : calendar.account
+        if let index = groups.firstIndex(where: { $0.account == account }) {
+            groups[index].calendars.append(calendar)
+        } else {
+            groups.append((account, [calendar]))
+        }
+    }
+    return groups.map { group in
+        (group.account, group.calendars.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending })
+    }
+}
+
+/// "N of M calendars" with Select All / Select None, for a selection where nil means all calendars.
+private struct CalendarSelectionSummary: View {
+    @EnvironmentObject private var model: AppModel
+    let selection: WritableKeyPath<AppConfig, [CalendarReference]?>
+
+    var body: some View {
+        if model.calendars.isEmpty {
+            Text("No calendars available.").foregroundStyle(.secondary)
+        } else {
+            HStack {
+                Text(summary).foregroundStyle(.secondary)
+                Spacer()
+                Button("Select All") { model.updateConfig { $0[keyPath: selection] = nil } }
+                    .disabled(model.config[keyPath: selection] == nil)
+                Button("Select None") { model.updateConfig { $0[keyPath: selection] = [] } }
+                    .disabled(model.config[keyPath: selection]?.isEmpty == true)
+            }
+        }
+    }
+
+    private var summary: String {
+        guard let selected = model.config[keyPath: selection] else { return "All calendars" }
+        let ids = Set(selected.map(\.id))
+        return "\(model.calendars.filter { ids.contains($0.id) }.count) of \(model.calendars.count) calendars"
+    }
+}
+
+/// One section of calendar toggles per account.
+private struct CalendarSelectionSections: View {
+    @EnvironmentObject private var model: AppModel
+    let selection: WritableKeyPath<AppConfig, [CalendarReference]?>
+
+    var body: some View {
+        ForEach(calendarsByAccount(model.calendars), id: \.account) { group in
+            Section(group.account) {
+                ForEach(group.calendars) { calendar in
+                    Toggle(isOn: model.calendarSelection(selection, contains: calendar)) {
+                        CalendarLabel(calendar: calendar, showsAccount: false)
+                    }
+                }
+            }
+        }
+    }
+}
+
 private struct CalendarLabel: View {
     let calendar: CalendarInfo
+    var showsAccount = true
 
     var body: some View {
         HStack(spacing: 8) {
@@ -481,7 +620,7 @@ private struct CalendarLabel: View {
                 .fill(Color(nsColor: NSColor(hex: calendar.color) ?? .secondaryLabelColor))
                 .frame(width: 10, height: 10)
             Text(calendar.title)
-            Text(calendar.account).foregroundStyle(.secondary)
+            if showsAccount { Text(calendar.account).foregroundStyle(.secondary) }
         }
     }
 }

@@ -27,6 +27,8 @@ public struct SyncRuleResult: Codable, Sendable {
 public final class SyncCoordinator: @unchecked Sendable {
     public static let didChangeNotification = Notification.Name("EventKitMCP.SyncDidChange")
     public static let scheduleMinutes = [12, 27, 42, 57]
+    /// Longest range a rule syncs ahead; runs over the configured range clean up events up to this far.
+    public static let maxDaysAhead = 365
 
     private let backend: CalendarBackend
     private let configStore: ConfigStore
@@ -111,9 +113,36 @@ public final class SyncCoordinator: @unchecked Sendable {
         notify()
         runQueue.async { [self] in
             reconcileCalendars()
-            _ = performRun(rules: configStore.config.syncRules.filter(\.enabled), trigger: trigger)
+            _ = performRun(rules: configStore.config.syncRules.filter(\.enabled), trigger: trigger, cleanUpBeyondRange: true)
         }
         return true
+    }
+
+    /// Applies a saved rule right away. Events the previous version created where the new one will not
+    /// find them (another target calendar or mode) are deleted; then the rule runs when `run` is true,
+    /// which deletes its events that no longer match its days, hours or range.
+    public func applyRuleChange(from previous: SyncRule?, to saved: SyncRule, run: Bool) {
+        runQueue.async { [self] in applyRuleChangeNow(from: previous, to: saved, run: run) }
+    }
+
+    func applyRuleChangeNow(from previous: SyncRule?, to saved: SyncRule, run: Bool) {
+        if let previous, previous.marker != saved.marker || previous.targetCalendarId != saved.targetCalendarId {
+            let from = Calendar.current.startOfDay(for: Date())
+            let to = Calendar.current.date(byAdding: .day, value: Self.maxDaysAhead + 1, to: from)!
+            do {
+                let count = try purgeNow(calendarId: previous.targetCalendarId, from: from, to: to, marker: previous.marker)
+                addLog(SyncLogEntry(
+                    timestamp: Date(), rule: currentLabel(for: previous), status: "PURGE",
+                    message: "\(count) events deleted after the rule changed calendar or mode"
+                ))
+            } catch {
+                addLog(SyncLogEntry(timestamp: Date(), rule: currentLabel(for: previous), status: "ERROR", message: error.localizedDescription))
+            }
+        }
+        guard run, saved.enabled else { return }
+        locked { running = true }
+        notify()
+        _ = performRun(rules: [saved], trigger: "rule saved", cleanUpBeyondRange: true)
     }
 
     /// Runs rules synchronously (waiting for an in-progress run to finish first).
@@ -126,7 +155,7 @@ public final class SyncCoordinator: @unchecked Sendable {
                 if let ruleIds { return ruleIds.contains(rule.id) }
                 return rule.enabled
             }
-            return performRun(rules: rules, trigger: "mcp", from: from, to: to)
+            return performRun(rules: rules, trigger: "mcp", from: from, to: to, cleanUpBeyondRange: to == nil)
         }
     }
 
@@ -156,9 +185,9 @@ public final class SyncCoordinator: @unchecked Sendable {
 
     public func purge(calendarId: String, from: Date, to: Date, marker: String?, dryRun: Bool) throws -> Int {
         try runQueue.sync {
-            let count = try CalendarSyncEngine(backend: backend).purge(
-                calendarId: calendarId, from: from, to: to, marker: marker, dryRun: dryRun
-            )
+            let count = try dryRun
+                ? CalendarSyncEngine(backend: backend).purge(calendarId: calendarId, from: from, to: to, marker: marker, dryRun: true)
+                : purgeNow(calendarId: calendarId, from: from, to: to, marker: marker)
             if !dryRun {
                 let name = backend.calendarDisplayName(calendarId) ?? calendarId
                 addLog(SyncLogEntry(timestamp: Date(), rule: name, status: "PURGE", message: "\(count) synced events deleted"))
@@ -167,7 +196,17 @@ public final class SyncCoordinator: @unchecked Sendable {
         }
     }
 
-    private func performRun(rules: [SyncRule], trigger: String, from: Date? = nil, to: Date? = nil) -> [SyncRuleResult] {
+    /// Must run on `runQueue`.
+    private func purgeNow(calendarId: String, from: Date, to: Date, marker: String?) throws -> Int {
+        try CalendarSyncEngine(backend: backend).purge(calendarId: calendarId, from: from, to: to, marker: marker, dryRun: false)
+    }
+
+    /// `cleanUpBeyondRange` also deletes the rules' events after the range, up to `maxDaysAhead`, so
+    /// shortening the configured range removes what lies beyond it. Only for runs over that range:
+    /// a run over a custom range must not touch events outside it.
+    private func performRun(
+        rules: [SyncRule], trigger: String, from: Date? = nil, to: Date? = nil, cleanUpBeyondRange: Bool = false
+    ) -> [SyncRuleResult] {
         defer {
             locked {
                 running = false
@@ -180,6 +219,7 @@ public final class SyncCoordinator: @unchecked Sendable {
         let start = from ?? Calendar.current.startOfDay(for: Date())
         let end = to ?? Calendar.current.date(byAdding: .day, value: max(1, config.syncDaysAhead), to: start)!
         let engine = CalendarSyncEngine(backend: backend)
+        let cleanUpUntil = cleanUpBeyondRange ? Calendar.current.date(byAdding: .day, value: Self.maxDaysAhead + 1, to: start) : nil
 
         if rules.isEmpty {
             addLog(SyncLogEntry(timestamp: Date(), rule: "", status: "SKIP", message: "No enabled rules to run (\(trigger))"))
@@ -196,7 +236,8 @@ public final class SyncCoordinator: @unchecked Sendable {
                     from: start,
                     to: end,
                     options: rule.options,
-                    marker: rule.marker
+                    marker: rule.marker,
+                    cleanUpUntil: cleanUpUntil
                 )
                 results.append(SyncRuleResult(ruleId: rule.id.uuidString, rule: label, status: "ok", summary: summary))
                 addLog(SyncLogEntry(timestamp: Date(), rule: label, status: summary.errors > 0 ? "WARN" : "OK", message: summary.description))

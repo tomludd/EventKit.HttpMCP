@@ -16,6 +16,7 @@ final class AppModel: ObservableObject {
     private var httpServer: LocalHTTPServer?
     private var observers: [NSObjectProtocol] = []
     private var refreshTimer: Timer?
+    private var rangeChangeSync: Task<Void, Never>?
 
     @Published private(set) var config: AppConfig
     @Published private(set) var calendars: [CalendarInfo] = []
@@ -138,6 +139,7 @@ final class AppModel: ObservableObject {
             restartServer()
         }
         if config.countdownCalendarIds != previous.countdownCalendarIds { refreshMeetings() }
+        if config.syncDaysAhead != previous.syncDaysAhead && config.autoSyncEnabled { syncAfterRangeChange() }
         refreshSyncState()
     }
 
@@ -228,7 +230,12 @@ final class AppModel: ObservableObject {
         sync.runInBackground(trigger: "menu")
     }
 
+    /// Saves a rule and applies it right away, so events that no longer fit it disappear without
+    /// waiting for the next scheduled run (which only runs while automatic sync is on).
     func saveRule(_ rule: SyncRule) {
+        let previous = config.syncRules.first { $0.id == rule.id }
+        guard previous != rule else { return }
+        defer { sync.applyRuleChange(from: previous, to: rule, run: config.autoSyncEnabled) }
         updateConfig { config in
             if let index = config.syncRules.firstIndex(where: { $0.id == rule.id }) {
                 config.syncRules[index] = rule
@@ -240,6 +247,17 @@ final class AppModel: ObservableObject {
 
     func deleteRule(_ rule: SyncRule) {
         updateConfig { $0.syncRules.removeAll { $0.id == rule.id } }
+    }
+
+    /// Runs all rules once the days-ahead stepper has been left alone for a moment, which removes
+    /// events beyond a shortened range and adds them for a longer one.
+    private func syncAfterRangeChange() {
+        rangeChangeSync?.cancel()
+        rangeChangeSync = Task { [sync] in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            sync.runInBackground(trigger: "range changed")
+        }
     }
 
     func runRule(_ rule: SyncRule) {

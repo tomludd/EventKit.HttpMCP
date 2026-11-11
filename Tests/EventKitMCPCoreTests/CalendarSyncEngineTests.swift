@@ -5,6 +5,7 @@ import Testing
 /// In-memory calendar used to exercise the sync engine without EventKit.
 final class InMemoryBackend: CalendarBackend {
     var calendars: [String: (name: String, writable: Bool)] = [:]
+    var withoutOutOfOffice: Set<String> = []
     var events: [CalendarEventRecord] = []
     private var nextId = 1
 
@@ -46,10 +47,13 @@ final class InMemoryBackend: CalendarBackend {
         nextId += 1
     }
 
-    func updateEvent(id: String, title: String, location: String?) throws {
+    func calendarSupportsOutOfOffice(_ calendarId: String) -> Bool { !withoutOutOfOffice.contains(calendarId) }
+
+    func updateEvent(id: String, title: String, location: String?, availability: EventAvailability?) throws {
         guard let index = events.firstIndex(where: { $0.id == id }) else { throw SyncError.calendarNotFound(id) }
         events[index].title = title
         events[index].location = location
+        if let availability { events[index].availability = availability }
     }
 
     func deleteEvent(id: String) throws {
@@ -222,8 +226,84 @@ struct CalendarSyncEngineTests {
         backend.add("work", "Day meeting", at(16, 10))
         backend.add("work", "Early call", at(16, 6, 30))
         backend.add("work", "Evening", at(16, 17, 45))
-        _ = try run(backend, SyncOptions(outsideWorkHoursOnly: true, workDayStartHour: 7, workDayEndHour: 18))
+        _ = try run(backend, SyncOptions(hoursFilter: .outside, workDayStartHour: 7, workDayEndHour: 18))
         #expect(backend.inCalendar("home").map(\.start) == [at(16, 6, 30), at(16, 17, 45)])
+    }
+
+    @Test func syncsOnlyOnSelectedDays() throws {
+        // 16 October 2026 is a Friday.
+        let backend = makeBackend()
+        backend.add("work", "Friday", at(16, 10))
+        backend.add("work", "Saturday", at(17, 10))
+        backend.add("work", "Sunday all day", at(18, 0), minutes: 1440, isAllDay: true)
+        backend.add("work", "Weekend trip", at(17, 0), minutes: 3 * 1440, isAllDay: true)
+        backend.add("work", "Monday", at(19, 10))
+        let options = SyncOptions(hoursFilter: .within, days: Weekday.workdays, workDayStartHour: 8, workDayEndHour: 16)
+        _ = try run(backend, options)
+        #expect(backend.inCalendar("home").map(\.start) == [at(16, 10), at(17, 0), at(19, 10)])
+
+        // Blocks made before the days were chosen are removed.
+        let backend2 = makeBackend()
+        backend2.add("work", "Saturday", at(17, 10))
+        _ = try run(backend2, SyncOptions(hoursFilter: .within, workDayStartHour: 8, workDayEndHour: 16))
+        #expect(backend2.inCalendar("home").count == 1)
+        #expect(try run(backend2, options).deleted == 1)
+        #expect(backend2.inCalendar("home").isEmpty)
+    }
+
+    @Test func daysApplyWithoutAnHoursFilter() throws {
+        let backend = makeBackend()
+        backend.add("work", "Friday", at(16, 10))
+        backend.add("work", "Saturday", at(17, 10))
+        backend.add("work", "Friday night", at(16, 23), minutes: 120)
+        _ = try run(backend, SyncOptions(days: [.sat]))
+        #expect(backend.inCalendar("home").map(\.start) == [at(16, 23), at(17, 10)])
+    }
+
+    @Test func outsideStillCountsEventsUntilMidnightAsOutside() throws {
+        let backend = makeBackend()
+        backend.add("work", "Late", at(16, 20), minutes: 240)
+        _ = try run(backend, SyncOptions(hoursFilter: .outside, workDayStartHour: 7, workDayEndHour: 24))
+        #expect(backend.inCalendar("home").map(\.start) == [at(16, 20)])
+    }
+
+    @Test func withinHoursOnly() throws {
+        let backend = makeBackend()
+        backend.add("work", "Dentist", at(16, 10))
+        backend.add("work", "Before", at(16, 7))
+        backend.add("work", "Overlaps start", at(16, 7, 30), minutes: 60)
+        backend.add("work", "Ends at start", at(16, 7, 30))
+        backend.add("work", "Overlaps end", at(16, 15, 30))
+        backend.add("work", "After", at(16, 16))
+        backend.add("work", "Until midnight", at(16, 23), minutes: 60)
+        _ = try run(backend, SyncOptions(hoursFilter: .within, workDayStartHour: 8, workDayEndHour: 16))
+        #expect(backend.inCalendar("home").map(\.start).sorted() == [at(16, 7, 30), at(16, 10), at(16, 15, 30)])
+    }
+
+    @Test func blocksAsOutOfOffice() throws {
+        let backend = makeBackend()
+        backend.add("work", "Dentist", at(16, 10))
+        _ = try run(backend, SyncOptions(blockEventName: "Personal", blockAsOutOfOffice: true))
+        #expect(backend.inCalendar("home").map(\.availability) == [.unavailable])
+        #expect(backend.inCalendar("home").map(\.title) == ["Personal"])
+
+        // Turning the option off (and on again) changes the existing block instead of recreating it.
+        let off = try run(backend, SyncOptions(blockEventName: "Personal"))
+        #expect(off.updated == 1 && off.created == 0)
+        #expect(backend.inCalendar("home").map(\.availability) == [.busy])
+        let on = try run(backend, SyncOptions(blockEventName: "Personal", blockAsOutOfOffice: true))
+        #expect(on.updated == 1 && on.created == 0)
+        #expect(backend.inCalendar("home").map(\.availability) == [.unavailable])
+        #expect(try run(backend, SyncOptions(blockEventName: "Personal", blockAsOutOfOffice: true)).updated == 0)
+    }
+
+    @Test func blocksAsBusyWhereOutOfOfficeIsUnsupported() throws {
+        let backend = makeBackend()
+        backend.withoutOutOfOffice = ["home"]
+        backend.add("work", "Dentist", at(16, 10))
+        _ = try run(backend, SyncOptions(blockAsOutOfOffice: true))
+        #expect(backend.inCalendar("home").map(\.availability) == [.busy])
+        #expect(try run(backend, SyncOptions(blockAsOutOfOffice: true)).updated == 0)
     }
 
     @Test func copyModeCopiesTitleAndNotesAsFree() throws {

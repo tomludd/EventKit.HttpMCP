@@ -407,11 +407,16 @@ public enum CalendarTools {
         let sourceCalendarId: String
         let targetCalendarId: String
         let mode: String
+        let hoursFilter: String
+        /// Kept for clients written before hoursFilter.
         let outsideWorkHoursOnly: Bool
+        /// nil means every day.
+        let days: [String]?
         let workDayStartHour: Int
         let workDayEndHour: Int
         let blockEventName: String
         let blockEventLocation: String
+        let blockAsOutOfOffice: Bool
         let marker: String
     }
 
@@ -457,11 +462,14 @@ public enum CalendarTools {
                 sourceCalendarId: rule.sourceCalendarId,
                 targetCalendarId: rule.targetCalendarId,
                 mode: rule.mode.rawValue,
-                outsideWorkHoursOnly: rule.outsideWorkHoursOnly,
+                hoursFilter: rule.hoursFilter.rawValue,
+                outsideWorkHoursOnly: rule.hoursFilter == .outside,
+                days: rule.days?.sorted { $0.number < $1.number }.map(\.rawValue),
                 workDayStartHour: rule.workDayStartHour,
                 workDayEndHour: rule.workDayEndHour,
                 blockEventName: rule.blockEventName,
                 blockEventLocation: rule.blockEventLocation,
+                blockAsOutOfOffice: rule.blockAsOutOfOffice,
                 marker: rule.marker
             )
         }
@@ -505,11 +513,16 @@ public enum CalendarTools {
         let modeProperty = enumString(["block", "copy"], "block = anonymous Busy events (default); copy = copy title and notes, shown as Free.")
         let ruleOptionProperties: [String: JSONValue] = [
             "mode": modeProperty,
-            "outside_work_hours_only": boolean("Only sync events outside working hours. Default false."),
-            "work_day_start_hour": integer("Working day start hour for outside_work_hours_only. Default 7."),
-            "work_day_end_hour": integer("Working day end hour for outside_work_hours_only. Default 18."),
+            "hours_filter": enumString(
+                ["any", "outside", "within"],
+                "Which source events to sync by time of day: any (default); outside = only events starting before work_day_start_hour or ending after work_day_end_hour; within = only events overlapping those hours, e.g. personal appointments during the working day."
+            ),
+            "days": stringArray("Days of the week whose events sync: mon, tue, wed, thu, fri, sat, sun, or \"all\". All-day and multi-day events sync if they cover one of them. Default: all."),
+            "work_day_start_hour": integer("Start hour used by hours_filter. Default 7."),
+            "work_day_end_hour": integer("End hour used by hours_filter. Default 18."),
             "block_event_name": string("Title of block events. Default 'Busy' (Out of Office events keep 'Out of Office')."),
             "block_event_location": string("Location of block events. Default none."),
+            "block_as_out_of_office": boolean("Show block events as Out of Office instead of Busy, e.g. personal appointments blocked in a work calendar. Calendars without Out of Office (such as Google) keep Busy. Default false."),
         ]
 
         func applyOptions(_ args: ToolArguments, to rule: inout SyncRule) throws {
@@ -517,13 +530,30 @@ public enum CalendarTools {
                 guard let parsed = SyncMode(rawValue: mode.lowercased()) else { throw ToolError("`mode` must be block or copy.") }
                 rule.mode = parsed
             }
-            if let value = try args.bool("outside_work_hours_only") { rule.outsideWorkHoursOnly = value }
+            // Older clients may still send outside_work_hours_only; hours_filter wins when both are set.
+            if let value = try args.bool("outside_work_hours_only") { rule.hoursFilter = value ? .outside : .any }
+            if let value = args.string("hours_filter") {
+                guard let parsed = HoursFilter(rawValue: value.lowercased()) else { throw ToolError("`hours_filter` must be any, outside or within.") }
+                rule.hoursFilter = parsed
+            }
+            if let names = args.stringArray("days") {
+                if names.count == 1, names[0].lowercased() == "all" {
+                    rule.days = nil
+                } else {
+                    let days = try names.map { name in
+                        guard let day = Weekday(name: name) else { throw ToolError("`days` must be mon, tue, wed, thu, fri, sat, sun or all.") }
+                        return day
+                    }
+                    rule.days = Set(days).count == Weekday.allCases.count ? nil : Set(days)
+                }
+            }
             if let value = try args.int("work_day_start_hour") { rule.workDayStartHour = min(max(value, 0), 23) }
             if let value = try args.int("work_day_end_hour") { rule.workDayEndHour = min(max(value, 1), 24) }
             if let value = args.raw["block_event_name"]?.stringValue {
                 rule.blockEventName = value.trimmingCharacters(in: .whitespaces).isEmpty ? "Busy" : value
             }
             if let value = args.raw["block_event_location"]?.stringValue { rule.blockEventLocation = value }
+            if let value = try args.bool("block_as_out_of_office") { rule.blockAsOutOfOffice = value }
         }
 
         func applyCalendars(_ args: ToolArguments, to rule: inout SyncRule) throws {
@@ -595,7 +625,7 @@ public enum CalendarTools {
         server.register(MCPTool(
             name: "save_sync_rule",
             title: "Save sync rule",
-            description: "Creates a sync rule, or updates the rule with `id`. Saved rules run on the automatic schedule and from the menu bar.",
+            description: "Creates a sync rule, or updates the rule with `id`. Saved rules run on the automatic schedule and from the menu bar. While automatic sync is on, a saved rule also runs right away, which removes its events that no longer match; changing a rule's target calendar or mode deletes the events it created before.",
             inputSchema: schema([
                 "id": string("Rule id to update. Omit to create a new rule."),
                 "source_calendar": string("Calendar to copy busy time from (id or name). Required for new rules."),
@@ -604,7 +634,8 @@ public enum CalendarTools {
             ].merging(ruleOptionProperties) { a, _ in a }),
             readOnly: false
         ) { args in
-            var rule = try args.string("id").map(findRule) ?? SyncRule()
+            let previous = try args.string("id").map(findRule)
+            var rule = previous ?? SyncRule()
             try applyCalendars(args, to: &rule)
             try applyOptions(args, to: &rule)
             if let enabled = try args.bool("enabled") { rule.enabled = enabled }
@@ -615,6 +646,9 @@ public enum CalendarTools {
                 } else {
                     config.syncRules.append(saved)
                 }
+            }
+            if previous != saved {
+                sync.applyRuleChange(from: previous, to: saved, run: config.config.autoSyncEnabled)
             }
             return ruleInfo(saved)
         })

@@ -96,9 +96,10 @@ EventKit cannot add attendees or send RSVPs, so those `ical` features are not in
 
 Rules are set up in **Settings → Sync** (or via MCP). Each rule copies busy time from a *source* calendar into a *target* calendar:
 
-- **Block** (default): anonymous events titled `Busy` (configurable title and location). Out of Office stays `Out of Office`.
+- **Block** (default): anonymous events titled `Busy` (configurable title and location). Out of Office stays `Out of Office`. **Show as Out of Office** makes every block Out of Office instead of Busy, e.g. personal appointments in a work calendar; calendars without Out of Office (such as Google) keep Busy.
 - **Copy**: copies title and notes, marked Free.
-- **Only outside working hours**: optional, default 07:00–18:00.
+- **Hours** (optional, default 07:00–18:00): sync only events *outside* the hours (e.g. evening work meetings into a personal calendar), or only events *between* them (e.g. personal appointments during the day into a work calendar). All-day and multi-day events pass both.
+- **Days**: optionally only events on the chosen days of the week, e.g. Monday–Friday. All-day and multi-day events sync if they cover one of them.
 
 As in `outlook-cli`:
 

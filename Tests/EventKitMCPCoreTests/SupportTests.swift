@@ -150,6 +150,41 @@ struct ConfigTests {
         #expect(config.mcpCalendarScope == nil)
     }
 
+    @Test func readsOutsideWorkHoursOnlyAsHoursFilter() throws {
+        let json = #"""
+        {"syncRules": [
+            {"sourceCalendarId": "a", "targetCalendarId": "b", "outsideWorkHoursOnly": true, "workDayStartHour": 8, "workDayEndHour": 17},
+            {"sourceCalendarId": "a", "targetCalendarId": "c", "outsideWorkHoursOnly": false},
+            {"sourceCalendarId": "a", "targetCalendarId": "d"}
+        ]}
+        """#
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+        #expect(config.syncRules.map(\.hoursFilter) == [.outside, .any, .any])
+        let options = config.syncRules[0].options
+        #expect(options.hoursFilter == .outside && options.workDayStartHour == 8 && options.workDayEndHour == 17)
+
+        var within = config
+        within.syncRules[0].hoursFilter = .within
+        for config in [config, within] {
+            let data = try JSONEncoder().encode(config)
+            #expect(try JSONDecoder().decode(AppConfig.self, from: data) == config)
+            // Versions before hoursFilter read only outsideWorkHoursOnly.
+            let rules = try #require((try JSONSerialization.jsonObject(with: data) as? [String: Any])?["syncRules"] as? [[String: Any]])
+            #expect(rules.map { $0["outsideWorkHoursOnly"] as? Bool } == config.syncRules.map { $0.hoursFilter == .outside })
+        }
+    }
+
+    @Test func roundTripsRuleDays() throws {
+        var config = AppConfig()
+        config.syncRules = [SyncRule(source: CalendarReference(id: "a"), target: CalendarReference(id: "b"), days: [.mon, .fri]), SyncRule()]
+        let data = try JSONEncoder().encode(config)
+        #expect(try JSONDecoder().decode(AppConfig.self, from: data) == config)
+        let rules = try #require((try JSONSerialization.jsonObject(with: data) as? [String: Any])?["syncRules"] as? [[String: Any]])
+        #expect(rules[0]["days"] as? [String] == ["mon", "fri"])
+        #expect(rules[1]["days"] == nil)
+        #expect(Weekday(name: "Monday") == .mon && Weekday(number: 1) == .sun && Weekday.sat.number == 7)
+    }
+
     @Test func roundTripsMCPOptions() throws {
         var config = AppConfig()
         config.mcpServerEnabled = false
