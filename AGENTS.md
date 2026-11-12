@@ -8,7 +8,7 @@ server and runs calendar sync rules. See README.md for features; this file is wh
 - Needs the full Xcode toolchain (SwiftUI macros): `export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`.
 - `swift test` runs the core tests (sync engine, config, HTTP/MCP). Run it before every commit.
 - `scripts/build-app.sh --install` builds, copies to `~/Applications/EventKit MCP.app` and restarts the app.
-  This is how the maintainer's own Mac runs the app (not Homebrew).
+  The maintainer's Mac always runs the latest local build from this script, never the release zip or Homebrew.
 
 ## The running app
 
@@ -55,4 +55,4 @@ Do every step; a release is not done until the GitHub Release has the zip and th
    `shasum -a 256` and the new url in `Formula/eventkit-mcp.rb`, `ruby -c` it, commit
    "Point the Homebrew formula at the vX.Y.Z release", push.
 7. Verify: the release is Latest and its zip downloads with the same sha256; the tarball has the new version.
-8. Offer to reinstall locally (`scripts/build-app.sh --install`), warning that calendar access must be granted again.
+8. Reinstall the local build (`scripts/build-app.sh --install`) and ask the user to grant calendar access again.
