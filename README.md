@@ -8,7 +8,21 @@ A macOS menu bar app that exposes your calendars (every account in Calendar.app:
 
 ## Install
 
-Requires macOS 14+ and Xcode. Both options build the app from source on your Mac, and both need the full Xcode app, not just the Command Line Tools, because of the SwiftUI macros.
+Requires macOS 14+.
+
+### Download
+
+Download `EventKit-MCP-<version>.zip` from the [latest release](https://github.com/tomludd/EventKit.HttpMCP/releases/latest) (universal: Apple silicon and Intel). Unzip it, move **EventKit MCP.app** to `~/Applications` or `/Applications` and open it.
+
+The app is not notarized by Apple, so macOS blocks the first launch. Either open **System Settings → Privacy & Security** and click **Open Anyway**, or remove the quarantine flag:
+
+```sh
+xattr -dr com.apple.quarantine ~/Applications/"EventKit MCP.app"
+```
+
+To update, download the new zip and replace the app.
+
+The other two options build the app from source on your Mac and need the full Xcode app, not just the Command Line Tools, because of the SwiftUI macros.
 
 ### Homebrew
 
@@ -131,4 +145,4 @@ swift test     # sync engine, HTTP/MCP handling, dates, countdown, free slots
 swift build
 ```
 
-To release: bump `CFBundleShortVersionString` in `Resources/Info.plist`, tag `vX.Y.Z` on `main` and push the tag, then point `url` and `sha256` in `Formula/eventkit-mcp.rb` at the new tag's tarball.
+To release: follow the checklist in [AGENTS.md](AGENTS.md#release-checklist): bump the version, tag `vX.Y.Z`, publish a GitHub Release with the zip from `scripts/package-release.sh`, and point the Homebrew formula at the new tag.

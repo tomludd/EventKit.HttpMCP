@@ -3,6 +3,8 @@
 #   scripts/build-app.sh            release build
 #   scripts/build-app.sh --install  also copy to ~/Applications and (re)start it
 #
+# UNIVERSAL=1 builds for both Apple silicon and Intel (used by scripts/package-release.sh).
+#
 # CODESIGN_IDENTITY selects the signing identity (default "-" = ad-hoc). With ad-hoc signing macOS
 # may ask for calendar access again after each rebuild; a stable identity avoids that.
 set -euo pipefail
@@ -18,8 +20,12 @@ if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app ]]; then
 fi
 
 cd "$ROOT"
-swift build -c release --product EventKitMCP
-BIN_DIR="$(swift build -c release --show-bin-path)"
+BUILD_ARGS=(-c release)
+if [[ "${UNIVERSAL:-}" == "1" ]]; then
+  BUILD_ARGS+=(--arch arm64 --arch x86_64)
+fi
+swift build "${BUILD_ARGS[@]}" --product EventKitMCP
+BIN_DIR="$(swift build "${BUILD_ARGS[@]}" --show-bin-path)"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
