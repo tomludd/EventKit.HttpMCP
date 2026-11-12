@@ -105,7 +105,7 @@ As in `outlook-cli`:
 
 - Events with availability Busy or Out of Office are synced. Free, tentative, declined and canceled events are skipped. On calendars without free/busy support, timed events count as busy.
 - Created events carry `[eventkit-sync:<mode>:<hash>]` in their notes and are **never re-synced**, so two-way rules (A→B and B→A) don't cascade. Events tagged by outlook-cli (`[outlook-sync:…]`) are skipped too.
-- Each run deletes blocks whose source disappeared or moved, refreshes stale titles/locations, and skips slots where the target already has a real event at the same time.
+- Each run deletes blocks whose source disappeared or moved, refreshes stale titles/locations, and skips slots where the target already has an event at the same time. Out of Office blocks are added anyway, unless that event is Out of Office too.
 - Rules run automatically every hour at minutes **12, 27, 42 and 57**, for today + 90 days (configurable), and on **Sync Calendars Now**. **Purge** removes a rule's events.
 
 ## Local-only access

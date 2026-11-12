@@ -156,7 +156,11 @@ public final class CalendarSyncEngine {
         let targetEvents = try backend.events(calendarId: targetCalendarId, from: from, to: max(to, cleanUpUntil ?? to))
 
         let ours = targetEvents.filter { $0.notes?.contains(marker) == true }
-        let realTargetSlots = Set(targetEvents.filter { $0.notes?.contains(marker) != true }.map(Slot.init))
+        // Slots taken by other events in the target, and whether one of them already shows Out of Office.
+        var realTargetSlots: [Slot: Bool] = [:]
+        for event in targetEvents where event.notes?.contains(marker) != true {
+            realTargetSlots[Slot(event), default: false] = realTargetSlots[Slot(event)] == true || event.availability == .unavailable
+        }
         let sourceKeys = Set(sourceEvents.map { key(for: $0, mode: options.mode) })
 
         // Delete synced events whose source no longer exists (and duplicates of the same slot);
@@ -209,10 +213,15 @@ public final class CalendarSyncEngine {
                 continue
             }
 
-            // The target already has a real event in this exact slot (e.g. invited in both calendars).
-            if options.mode == .block && realTargetSlots.contains(Slot(source)) {
-                summary.skipped += 1
-                continue
+            // The target already has an event in this exact slot (e.g. invited in both calendars). An Out of
+            // Office block is still added unless that event shows Out of Office too: being away matters
+            // more than the meeting it overlaps.
+            if options.mode == .block, let slotIsOutOfOffice = realTargetSlots[Slot(source)] {
+                let blocksAsOutOfOffice = blockAvailability(source, options, targetSupportsOutOfOffice: targetSupportsOutOfOffice) == .unavailable
+                if !blocksAsOutOfOffice || slotIsOutOfOffice {
+                    summary.skipped += 1
+                    continue
+                }
             }
 
             let draft: EventDraft

@@ -187,6 +187,35 @@ struct CalendarSyncEngineTests {
         #expect(backend.inCalendar("home").count == 1)
     }
 
+    @Test func outOfOfficeBlocksAreAddedNextToBusyEventsInTheSameSlot() throws {
+        let backend = makeBackend()
+        backend.add("work", "Dentist", at(16, 10), minutes: 60)
+        backend.add("work", "Vacation", at(17, 10), minutes: 60, availability: .unavailable)
+        backend.add("home", "Backlog refinement", at(16, 10), minutes: 60)
+        backend.add("home", "Thon møte", at(17, 10), minutes: 60, notes: "[outlook-sync:block:388f3380]")
+
+        let summary = try run(backend, SyncOptions(blockEventName: "Private", blockAsOutOfOffice: true))
+
+        #expect(summary.created == 2)
+        let blocks = backend.inCalendar("home").filter { $0.availability == .unavailable }
+        #expect(blocks.map(\.title) == ["Private", "Out of Office"])
+        #expect(try run(backend, SyncOptions(blockEventName: "Private", blockAsOutOfOffice: true)).created == 0)
+    }
+
+    @Test func outOfOfficeIsNotAddedTwiceOrWhereItCannotShow() throws {
+        let backend = makeBackend()
+        backend.add("work", "Dentist", at(16, 10), minutes: 60)
+        backend.add("home", "Away", at(16, 10), minutes: 60, availability: .unavailable)
+        #expect(try run(backend, SyncOptions(blockAsOutOfOffice: true)).created == 0)
+
+        // Busy blocks keep skipping taken slots, as do Out of Office blocks where the target cannot show it.
+        backend.events.removeAll { $0.title == "Away" }
+        backend.add("home", "Meeting", at(16, 10), minutes: 60)
+        #expect(try run(backend).created == 0)
+        backend.withoutOutOfOffice = ["home"]
+        #expect(try run(backend, SyncOptions(blockAsOutOfOffice: true)).created == 0)
+    }
+
     @Test func neverResyncsSyncedEventsSoTwoWayRulesDoNotCascade() throws {
         let backend = makeBackend()
         backend.add("work", "Standup", at(16, 9))
