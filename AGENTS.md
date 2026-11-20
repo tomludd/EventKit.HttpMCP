@@ -36,7 +36,7 @@ server and runs calendar sync rules. See README.md for features; this file is wh
 
 ## Commits
 
-- Commit only when asked. Branch from `main`, then fast-forward `main` when the user wants it merged.
+- Commit only when asked. Work and commit directly on `main`: no feature branches or worktrees in this repo.
 - Subject in imperative sentence case, no prefix; body explains why. End with the `Co-Authored-By` line.
 
 ## Release checklist
