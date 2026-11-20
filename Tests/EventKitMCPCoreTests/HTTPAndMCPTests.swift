@@ -60,7 +60,7 @@ struct MCPHTTPHandlerTests {
     func post(_ json: String, host: String = "127.0.0.1:8765", origin: String? = nil, contentType: String = "application/json") -> HTTPResponse {
         var headers = ["host": host, "content-type": contentType, "accept": "application/json, text/event-stream"]
         headers["origin"] = origin
-        return handler.handle(HTTPRequest(method: "POST", path: "/mcp", headers: headers, body: Data(json.utf8)))
+        return handler.handle(HTTPRequest(method: "POST", path: "/mcp", headers: headers, body: Data(json.utf8), remoteAddress: .loopbackV4))
     }
 
     func decode(_ response: HTTPResponse) throws -> JSONValue {
@@ -136,9 +136,9 @@ struct MCPHTTPHandlerTests {
 
     @Test func requiresJSONContentTypeAndPost() {
         #expect(post(#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#, contentType: "text/plain").status == 415)
-        let get = handler.handle(HTTPRequest(method: "GET", path: "/mcp", headers: ["host": "127.0.0.1"]))
+        let get = handler.handle(HTTPRequest(method: "GET", path: "/mcp", headers: ["host": "127.0.0.1"], remoteAddress: .loopbackV4))
         #expect(get.status == 405)
-        let other = handler.handle(HTTPRequest(method: "GET", path: "/other", headers: ["host": "127.0.0.1"]))
+        let other = handler.handle(HTTPRequest(method: "GET", path: "/other", headers: ["host": "127.0.0.1"], remoteAddress: .loopbackV4))
         #expect(other.status == 404)
     }
 }

@@ -149,7 +149,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         if !model.config.mcpServerEnabled {
             serverState = "Disabled"
         } else if case .running = model.serverStatus {
-            serverState = "Running"
+            serverState = model.isReachableFromNetwork ? "Running (network access on)" : "Running"
         } else {
             serverState = "Not running"
         }

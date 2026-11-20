@@ -119,10 +119,14 @@ private struct MCPSettingsTab: View {
             } header: {
                 Text("MCP server")
             } footer: {
-                Text("Only reachable from this Mac: the server listens on 127.0.0.1 and ::1 only and rejects requests whose Host or Origin is not localhost. Calendar sync and the menu bar keep working while the server is disabled.")
+                Text(model.config.allowsNetworkClients
+                     ? "Reachable from the networks allowed below as well as from this Mac. Calendar sync and the menu bar keep working while the server is disabled."
+                     : "Only reachable from this Mac: the server listens on 127.0.0.1 and ::1 only and rejects requests whose Host or Origin is not localhost. Calendar sync and the menu bar keep working while the server is disabled.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            NetworkAccessSection()
 
             Section {
                 CalendarSelectionSummary(selection: \.mcpCalendars)
@@ -155,6 +159,150 @@ private struct MCPSettingsTab: View {
     private func applyPort() {
         guard let port = parsedPort else { return }
         model.updateConfig { $0.port = port }
+    }
+}
+
+/// Allowed client networks (CIDR) and the API key other machines must send.
+private struct NetworkAccessSection: View {
+    @EnvironmentObject private var model: AppModel
+    @State private var newEntry = ""
+    @State private var entryError: String?
+    @State private var showKey = false
+    @State private var confirmRegenerate = false
+
+    var body: some View {
+        Section {
+            if model.config.allowsNetworkClients {
+                Label(networkBanner, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+            } else {
+                Label("Only this Mac can connect.", systemImage: "lock.fill")
+                    .foregroundStyle(.secondary)
+            }
+
+            ForEach(model.config.allowedClientCIDRs, id: \.self) { entry in
+                HStack {
+                    Text(entry).font(.body.monospaced())
+                    if let range = CIDRRange(entry) {
+                        if range.matchesEverything {
+                            Text("every \(range.network.isIPv4 ? "IPv4" : "IPv6") address").font(.caption).foregroundStyle(.orange)
+                        }
+                    } else {
+                        Text("invalid, ignored").font(.caption).foregroundStyle(.red)
+                    }
+                    Spacer()
+                    Button { remove(entry) } label: { Image(systemName: "minus.circle") }
+                        .buttonStyle(.borderless)
+                        .help("Remove")
+                }
+            }
+
+            LabeledContent("Allow network") {
+                VStack(alignment: .trailing, spacing: 4) {
+                    HStack {
+                        TextField("", text: $newEntry, prompt: Text("192.168.1.0/24 or fd00::/8"))
+                            .font(.body.monospaced())
+                            .frame(width: 220)
+                            .onSubmit(add)
+                            .onChange(of: newEntry) { _, _ in entryError = nil }
+                        Button("Add", action: add)
+                            .disabled(newEntry.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                    if let entryError {
+                        Text(entryError).font(.caption).foregroundStyle(.red)
+                    }
+                }
+            }
+
+            LabeledContent("API key") {
+                if let key = model.config.apiKey, !key.isEmpty {
+                    HStack {
+                        Text(showKey ? key : String(repeating: "•", count: 16))
+                            .font(.caption.monospaced())
+                            .textSelection(.enabled)
+                        Button { showKey.toggle() } label: { Image(systemName: showKey ? "eye.slash" : "eye") }
+                            .buttonStyle(.borderless)
+                            .help(showKey ? "Hide" : "Show")
+                        CopyButton(text: key)
+                        Button("Regenerate…") { confirmRegenerate = true }
+                    }
+                } else {
+                    HStack {
+                        Text("Created when you allow a network").foregroundStyle(.secondary)
+                        Button("Generate Now") { model.regenerateAPIKey() }
+                    }
+                }
+            }
+
+            if model.config.allowsNetworkClients, let key = model.config.apiKey {
+                // A few addresses of this Mac; IPv6 privacy addresses would otherwise fill the list.
+                let addresses = Array(InternetAddress.localInterfaceAddresses().prefix(4))
+                ForEach(Array(addresses.enumerated()), id: \.element) { index, address in
+                    let url = remoteURL(address)
+                    LabeledContent(index == 0 ? "From other machines" : "") {
+                        HStack {
+                            Text(url).font(.caption.monospaced()).textSelection(.enabled)
+                            CopyButton(text: url)
+                        }
+                    }
+                }
+                LabeledContent("Claude Code (remote)") {
+                    let command = remoteCommand(key: key, address: addresses.first)
+                    HStack(alignment: .top) {
+                        Text(command.replacingOccurrences(of: key, with: "<key>")).font(.caption.monospaced())
+                        CopyButton(text: command)
+                    }
+                }
+            }
+        } header: {
+            Text("Network access")
+        } footer: {
+            Text("Add networks in CIDR notation (a bare address is one host) to let other machines connect. The server then listens on all interfaces and refuses connections from anywhere else. Clients on other machines must send the API key as \"Authorization: Bearer <key>\" or \"X-API-Key: <key>\"; clients on this Mac never need it. Traffic is plain HTTP, so only allow networks you trust. IPv4 networks also match IPv4-mapped IPv6 peers; ::/0 does not include IPv4.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .confirmationDialog("Regenerate the API key?", isPresented: $confirmRegenerate) {
+            Button("Regenerate", role: .destructive) { model.regenerateAPIKey() }
+        } message: {
+            Text("Clients on other machines stop working until they use the new key.")
+        }
+    }
+
+    private var networkBanner: String {
+        if case .running = model.serverStatus, !model.isReachableFromNetwork {
+            return "Network access is on, but the server has not restarted yet."
+        }
+        return "Reachable from the network: clients in the networks below can connect with the API key."
+    }
+
+    private func add() {
+        let text = newEntry.trimmingCharacters(in: .whitespaces)
+        guard let range = CIDRRange(text) else {
+            entryError = "Not a valid IPv4 or IPv6 network, e.g. 192.168.1.0/24, 10.0.0.5/32 or fd00::/8."
+            return
+        }
+        let entry = range.description
+        guard !model.config.allowedClientCIDRs.contains(where: { CIDRRange($0) == range }) else {
+            entryError = "\(entry) is already allowed."
+            return
+        }
+        model.updateConfig { $0.allowedClientCIDRs.append(entry) }
+        newEntry = ""
+        entryError = nil
+    }
+
+    private func remove(_ entry: String) {
+        model.updateConfig { $0.allowedClientCIDRs.removeAll { $0 == entry } }
+    }
+
+    private func remoteURL(_ address: InternetAddress) -> String {
+        let host = address.isIPv4 ? address.description : "[\(address)]"
+        return "http://\(host):\(model.config.port)\(MCPHTTPHandler.endpointPath)"
+    }
+
+    private func remoteCommand(key: String, address: InternetAddress?) -> String {
+        let url = address.map(remoteURL) ?? "http://<this-mac>:\(model.config.port)\(MCPHTTPHandler.endpointPath)"
+        return "claude mcp add --transport http --scope user eventkit \(url) --header \"Authorization: Bearer \(key)\""
     }
 }
 

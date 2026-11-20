@@ -149,6 +149,11 @@ public struct AppConfig: Codable, Sendable, Equatable {
 
     public var port: Int
     public var mcpServerEnabled: Bool
+    /// Client networks in CIDR notation that may reach the MCP server from other machines. Empty
+    /// (the default) keeps the server on loopback only. Entries that do not parse are ignored.
+    public var allowedClientCIDRs: [String]
+    /// Key that clients other than this Mac must send. Generated when network access is first turned on.
+    public var apiKey: String?
     /// Calendars MCP clients can see and change; nil means all calendars.
     public var mcpCalendars: [CalendarReference]?
     public var autoSyncEnabled: Bool
@@ -165,6 +170,8 @@ public struct AppConfig: Codable, Sendable, Equatable {
     public init() {
         port = Self.defaultPort
         mcpServerEnabled = true
+        allowedClientCIDRs = []
+        apiKey = nil
         mcpCalendars = nil
         autoSyncEnabled = true
         syncDaysAhead = 90
@@ -187,6 +194,8 @@ public struct AppConfig: Codable, Sendable, Equatable {
         let d = AppConfig()
         port = try c.decodeIfPresent(Int.self, forKey: .port) ?? d.port
         mcpServerEnabled = try c.decodeIfPresent(Bool.self, forKey: .mcpServerEnabled) ?? d.mcpServerEnabled
+        allowedClientCIDRs = try c.decodeIfPresent([String].self, forKey: .allowedClientCIDRs) ?? d.allowedClientCIDRs
+        apiKey = try c.decodeIfPresent(String.self, forKey: .apiKey) ?? d.apiKey
         autoSyncEnabled = try c.decodeIfPresent(Bool.self, forKey: .autoSyncEnabled) ?? d.autoSyncEnabled
         syncDaysAhead = try c.decodeIfPresent(Int.self, forKey: .syncDaysAhead) ?? d.syncDaysAhead
         syncRules = try c.decodeIfPresent([SyncRule].self, forKey: .syncRules) ?? d.syncRules
@@ -213,6 +222,24 @@ public struct AppConfig: Codable, Sendable, Equatable {
 
     /// Ids of `countdownCalendars`; nil means all calendars.
     public var countdownCalendarIds: [String]? { countdownCalendars?.map(\.id) }
+
+    /// The networks of `allowedClientCIDRs` that parse.
+    public var allowedClientNetworks: [CIDRRange] { allowedClientCIDRs.compactMap(CIDRRange.init) }
+
+    public var accessPolicy: MCPAccessPolicy {
+        MCPAccessPolicy(allowedNetworks: allowedClientNetworks, apiKey: apiKey)
+    }
+
+    /// The MCP server listens beyond this Mac.
+    public var allowsNetworkClients: Bool { accessPolicy.allowsNetworkClients }
+
+    /// Generates the API key once network access is on and none exists yet. Returns whether it did.
+    @discardableResult
+    public mutating func ensureAPIKey() -> Bool {
+        guard allowsNetworkClients, apiKey?.isEmpty ?? true else { return false }
+        apiKey = MCPAccessPolicy.generateAPIKey()
+        return true
+    }
 }
 
 /// Thread-safe JSON persistence of `AppConfig` in ~/Library/Application Support/EventKitMCP/config.json.
@@ -230,6 +257,8 @@ public final class ConfigStore: @unchecked Sendable {
         } else {
             current = AppConfig()
         }
+        // A hand-edited config may allow networks without a key.
+        if current.ensureAPIKey() { save(current) }
     }
 
     public static var defaultURL: URL {
@@ -248,6 +277,8 @@ public final class ConfigStore: @unchecked Sendable {
         lock.lock()
         var copy = current
         mutate(&copy)
+        // Network access never runs without a key.
+        copy.ensureAPIKey()
         let changed = copy != current
         current = copy
         if changed { save(copy) }

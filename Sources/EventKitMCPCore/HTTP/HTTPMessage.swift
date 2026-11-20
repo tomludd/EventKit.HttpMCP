@@ -7,13 +7,19 @@ public struct HTTPRequest: Sendable {
     /// Header names are lower-cased; repeated headers are joined with ", ".
     public var headers: [String: String]
     public var body: Data
+    /// Address of the connected client, set by the server. nil (unknown) is treated as remote.
+    public var remoteAddress: InternetAddress?
 
-    public init(method: String, path: String, version: String = "HTTP/1.1", headers: [String: String] = [:], body: Data = Data()) {
+    public init(
+        method: String, path: String, version: String = "HTTP/1.1", headers: [String: String] = [:], body: Data = Data(),
+        remoteAddress: InternetAddress? = nil
+    ) {
         self.method = method
         self.path = path
         self.version = version
         self.headers = headers
         self.body = body
+        self.remoteAddress = remoteAddress
     }
 
     public var keepAlive: Bool {
@@ -59,6 +65,7 @@ public struct HTTPResponse: Sendable {
         case 202: return "Accepted"
         case 204: return "No Content"
         case 400: return "Bad Request"
+        case 401: return "Unauthorized"
         case 403: return "Forbidden"
         case 404: return "Not Found"
         case 405: return "Method Not Allowed"

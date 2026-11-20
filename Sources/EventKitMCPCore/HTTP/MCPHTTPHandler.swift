@@ -1,23 +1,43 @@
 import Foundation
 
-/// MCP Streamable HTTP transport (stateless, JSON responses only) with local-only access checks.
+/// MCP Streamable HTTP transport (stateless, JSON responses only) with access checks.
 ///
 /// - `POST /mcp` carries JSON-RPC messages; requests get `application/json`, notifications get `202`.
 /// - `GET /mcp` returns 405: the server never pushes messages, so no SSE stream is offered.
-/// - The Host header must name a loopback host (blocks DNS rebinding) and any Origin header must be a
-///   loopback origin (blocks web pages in the browser from calling the server).
+/// - The client address must be loopback or inside an allowed network (`MCPAccessPolicy`).
+/// - Loopback clients need a Host header naming a loopback host (blocks DNS rebinding); other clients
+///   need the API key instead, which a page rebound to this Mac cannot know.
+/// - Any Origin header must be a loopback origin (blocks web pages in the browser from calling the server).
 public final class MCPHTTPHandler: @unchecked Sendable {
     public static let endpointPath = "/mcp"
     private static let loopbackHosts: Set<String> = ["127.0.0.1", "localhost", "::1", "[::1]"]
 
     private let server: MCPServer
+    private let lock = NSLock()
+    private var policy = MCPAccessPolicy.localOnly
 
-    public init(server: MCPServer) {
+    public init(server: MCPServer, accessPolicy: MCPAccessPolicy = .localOnly) {
         self.server = server
+        self.policy = accessPolicy
+    }
+
+    public var accessPolicy: MCPAccessPolicy {
+        get { lock.withLock { policy } }
+        set { lock.withLock { policy = newValue } }
     }
 
     public func handle(_ request: HTTPRequest) -> HTTPResponse {
-        guard Self.isLoopbackHost(request.headers["host"]) else {
+        let policy = accessPolicy
+        let client = request.remoteAddress
+        guard policy.allowsConnection(from: client) else {
+            return .json(403, Self.rpcError(-32000, "Forbidden: client address is not allowed"))
+        }
+        if policy.requiresAPIKey(from: client) {
+            guard policy.isAuthorized(request) else {
+                return .json(401, Self.rpcError(-32001, "Unauthorized: send the API key as 'Authorization: Bearer <key>' or 'X-API-Key: <key>'"),
+                             headers: [("WWW-Authenticate", #"Bearer realm="EventKit MCP""#)])
+            }
+        } else if !Self.isLoopbackHost(request.headers["host"]) {
             return .json(403, Self.rpcError(-32000, "Forbidden: Host must be localhost/127.0.0.1"))
         }
         if let origin = request.headers["origin"], !Self.isLoopbackOrigin(origin) {

@@ -1,6 +1,6 @@
 # EventKit HTTP MCP
 
-A macOS menu bar app that exposes your calendars (every account in Calendar.app: Exchange/Microsoft 365, iCloud, Google, CalDAV, local) as an **MCP server over Streamable HTTP**, reachable **only from this Mac**.
+A macOS menu bar app that exposes your calendars (every account in Calendar.app: Exchange/Microsoft 365, iCloud, Google, CalDAV, local) as an **MCP server over Streamable HTTP**, reachable **only from this Mac** unless you allow other networks.
 
 - **MCP tools**: list/search/create/update/delete events, free-slot search, recurring events, join links. Inspired by the [`ical`](https://github.com/BRO3886/ical) Go CLI.
 - **Calendar sync & blocking**: a port of the block/copy sync from `outlook-cli` (`CalendarSyncService` + `SyncScheduler`), built on EventKit so it works across all accounts on the Mac.
@@ -126,15 +126,50 @@ As in `outlook-cli`:
 
 ## Local-only access
 
+By default the server is reachable only from this Mac:
+
 - Listens on loopback only (`127.0.0.1` and `::1`). Other machines cannot connect.
 - Drops any connection whose remote address is not loopback.
 - Requires a `Host` header of `localhost`/`127.0.0.1`/`[::1]`, which blocks DNS-rebinding attacks.
 - Rejects requests with a non-local `Origin` and requires `Content-Type: application/json`, so web pages in your browser cannot call it.
 - Stateless Streamable HTTP: `POST /mcp` returns JSON; `GET /mcp` returns 405 (no server push). `GET /health` is a simple liveness check.
 
+### Allowing other machines
+
+Settings → MCP → Network access takes a list of client networks in CIDR notation, IPv4 or IPv6
+(`192.168.1.0/24`, `10.0.0.5/32`, `fd00::/8`; a bare address is a single host). Stored as `allowedClientCIDRs` in the config.
+With at least one entry:
+
+- The server listens on all interfaces, port unchanged. Settings and the menu show that it is reachable from the network.
+- A connection is accepted only if its address is loopback or inside one of the networks; anything else is closed
+  before a request is read. IPv4 networks also match IPv4-mapped IPv6 peers (`::ffff:192.168.1.20`); `::/0` does not
+  cover IPv4, use `0.0.0.0/0` for that (which allows every IPv4 address: avoid it).
+- Every request from another machine, `/health` included, needs the API key as `Authorization: Bearer <key>` or
+  `X-API-Key: <key>`, otherwise it gets `401`. The key is generated when you first allow a network, stored as `apiKey`
+  in the config, and can be shown, copied and regenerated in Settings. Keys are compared in constant time.
+- Clients on this Mac (loopback) never need the key. Any local process can read the key from `config.json` anyway, so
+  requiring it would not keep local programs out; local browsers stay blocked by the `Host` and `Origin` checks.
+- The `Host` check applies to loopback clients only, since other machines may use any name or address of this Mac. A
+  page that rebinds its DNS name to this Mac still cannot call the server: from loopback its `Host` is wrong, from
+  another machine it lacks the key. The `Origin` check applies to every client.
+- A client on this Mac that uses the Mac's network address instead of `127.0.0.1` counts as another machine: its
+  address must be allowed and it must send the key.
+
+Connecting from another machine:
+
+```sh
+claude mcp add --transport http --scope user eventkit http://<this-mac>:8765/mcp --header "Authorization: Bearer <key>"
+```
+
+**Trade-off.** Anyone who can reach the port from an allowed network and has the key can read and change the calendars
+selected for MCP. Traffic is plain HTTP, so the key and your calendar data cross the network unencrypted: allow only
+networks you trust (your home LAN, a VPN such as Tailscale or WireGuard), keep the networks as narrow as possible,
+regenerate the key if it leaks, and remove all entries to return to loopback only. macOS may ask whether the app may
+accept incoming connections the first time it listens on the network.
+
 ## Files
 
-- Config: `~/Library/Application Support/EventKitMCP/config.json` (port, MCP on/off and calendars, sync rules, countdown settings)
+- Config: `~/Library/Application Support/EventKitMCP/config.json` (port, MCP on/off and calendars, allowed client networks and API key, sync rules, countdown settings)
 - `Sources/EventKitMCPCore`: EventKit store, sync engine, MCP server, HTTP server (unit-tested)
 - `Sources/EventKitMCP`: menu bar app (AppKit status item + SwiftUI settings)
 - `Formula/eventkit-mcp.rb`: Homebrew formula (this repo is its own tap)

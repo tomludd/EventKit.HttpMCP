@@ -1,8 +1,9 @@
 import Foundation
 import Network
 
-/// Minimal HTTP/1.1 server bound to the loopback interfaces only (127.0.0.1 and ::1).
-/// Connections whose remote address is not loopback are dropped as a second line of defence.
+/// Minimal HTTP/1.1 server. With a local-only access policy it binds to the loopback interfaces only
+/// (127.0.0.1 and ::1); with allowed networks it listens on all interfaces. Either way, connections from
+/// addresses the policy does not allow are dropped before any request is read.
 public final class LocalHTTPServer: @unchecked Sendable {
     public enum Status: Equatable, Sendable {
         case stopped
@@ -17,16 +18,27 @@ public final class LocalHTTPServer: @unchecked Sendable {
     private var listeners: [NWListener] = []
     private var connections: [ObjectIdentifier: HTTPConnection] = [:]
     private var currentStatus: Status = .stopped
+    private var policy: MCPAccessPolicy
+    /// Whether the listeners were started on all interfaces; fixed until the server is restarted.
+    public let listensOnNetwork: Bool
 
     /// Called on the server's queue whenever the status changes.
     public var onStatusChange: ((Status) -> Void)?
 
-    public init(port: UInt16, handler: @escaping (HTTPRequest) -> HTTPResponse) {
+    public init(port: UInt16, accessPolicy: MCPAccessPolicy = .localOnly, handler: @escaping (HTTPRequest) -> HTTPResponse) {
         self.port = port
+        self.policy = accessPolicy
+        self.listensOnNetwork = accessPolicy.allowsNetworkClients
         self.handler = handler
     }
 
     public var status: Status { queue.sync { currentStatus } }
+
+    /// Applies to new connections. A change of `allowsNetworkClients` needs a restart to rebind.
+    public var accessPolicy: MCPAccessPolicy {
+        get { queue.sync { policy } }
+        set { queue.async { [self] in policy = newValue } }
+    }
 
     public func start() {
         queue.async { [self] in
@@ -36,14 +48,22 @@ public final class LocalHTTPServer: @unchecked Sendable {
                 return
             }
             setStatus(.starting)
-            for (host, isPrimary) in [("127.0.0.1", true), ("::1", false)] {
+            // nil host: one dual-stack listener on all interfaces.
+            let hosts: [(String?, Bool)] = listensOnNetwork ? [(nil, true)] : [("127.0.0.1", true), ("::1", false)]
+            for (host, isPrimary) in hosts {
+                let hostName = host ?? "*"
                 do {
                     let parameters = NWParameters.tcp
                     parameters.allowLocalEndpointReuse = true
-                    parameters.requiredLocalEndpoint = .hostPort(host: NWEndpoint.Host(host), port: nwPort)
-                    let listener = try NWListener(using: parameters)
+                    let listener: NWListener
+                    if let host {
+                        parameters.requiredLocalEndpoint = .hostPort(host: NWEndpoint.Host(host), port: nwPort)
+                        listener = try NWListener(using: parameters)
+                    } else {
+                        listener = try NWListener(using: parameters, on: nwPort)
+                    }
                     listener.stateUpdateHandler = { [weak self] state in
-                        self?.listener(host: host, isPrimary: isPrimary, changedTo: state)
+                        self?.listener(host: hostName, isPrimary: isPrimary, changedTo: state)
                     }
                     listener.newConnectionHandler = { [weak self] connection in
                         self?.accept(connection)
@@ -52,7 +72,7 @@ public final class LocalHTTPServer: @unchecked Sendable {
                     listeners.append(listener)
                 } catch {
                     if isPrimary { setStatus(.failed(error.localizedDescription)) }
-                    NSLog("EventKitMCP: could not listen on \(host):\(port): \(error)")
+                    NSLog("EventKitMCP: could not listen on \(hostName):\(port): \(error)")
                 }
             }
         }
@@ -95,12 +115,13 @@ public final class LocalHTTPServer: @unchecked Sendable {
     }
 
     private func accept(_ connection: NWConnection) {
-        guard Self.isLoopback(connection.endpoint) else {
-            NSLog("EventKitMCP: rejected non-loopback connection from \(connection.endpoint)")
+        let address = InternetAddress(endpoint: connection.endpoint)
+        guard policy.allowsConnection(from: address) else {
+            NSLog("EventKitMCP: refused connection from \(connection.endpoint)")
             connection.cancel()
             return
         }
-        let http = HTTPConnection(connection: connection, handler: handler)
+        let http = HTTPConnection(connection: connection, remoteAddress: address, handler: handler)
         let key = ObjectIdentifier(http)
         connections[key] = http
         http.onClose = { [weak self] in
@@ -108,28 +129,13 @@ public final class LocalHTTPServer: @unchecked Sendable {
         }
         http.start()
     }
-
-    static func isLoopback(_ endpoint: NWEndpoint) -> Bool {
-        guard case .hostPort(let host, _) = endpoint else { return false }
-        switch host {
-        case .ipv4(let address):
-            return address.isLoopback
-        case .ipv6(let address):
-            if address.isLoopback { return true }
-            if let mapped = address.asIPv4 { return mapped.isLoopback }
-            return false
-        case .name(let name, _):
-            return name == "localhost"
-        @unknown default:
-            return false
-        }
-    }
 }
 
 /// One keep-alive TCP connection. Requests are handled in order on the connection's own queue,
 /// so a slow tool call (e.g. a sync run) does not block other clients.
 final class HTTPConnection: @unchecked Sendable {
     private let connection: NWConnection
+    private let remoteAddress: InternetAddress?
     private let handler: (HTTPRequest) -> HTTPResponse
     private let queue = DispatchQueue(label: "eventkit-mcp.http.connection", target: .global(qos: .userInitiated))
     private var buffer = Data()
@@ -138,8 +144,9 @@ final class HTTPConnection: @unchecked Sendable {
     private var cancelled = false
     var onClose: (() -> Void)?
 
-    init(connection: NWConnection, handler: @escaping (HTTPRequest) -> HTTPResponse) {
+    init(connection: NWConnection, remoteAddress: InternetAddress?, handler: @escaping (HTTPRequest) -> HTTPResponse) {
         self.connection = connection
+        self.remoteAddress = remoteAddress
         self.handler = handler
     }
 
@@ -188,8 +195,9 @@ final class HTTPConnection: @unchecked Sendable {
             case .failure(let status, let message):
                 send(.text(status, message), keepAlive: false)
                 return
-            case .request(let request, let consumed):
+            case .request(var request, let consumed):
                 buffer = buffer.subdata(in: consumed..<buffer.count)
+                request.remoteAddress = remoteAddress
                 let response = handler(request)
                 send(response, keepAlive: request.keepAlive)
             }

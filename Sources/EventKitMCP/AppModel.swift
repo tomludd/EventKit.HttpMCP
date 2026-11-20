@@ -44,9 +44,18 @@ final class AppModel: ObservableObject {
         switch serverStatus {
         case .stopped: return config.mcpServerEnabled ? "Stopped" : "Disabled"
         case .starting: return "Starting…"
-        case .running(let port): return "Running on 127.0.0.1:\(port)"
+        case .running(let port):
+            return httpServer?.listensOnNetwork == true
+                ? "Running on port \(port), reachable from the network"
+                : "Running on 127.0.0.1:\(port)"
         case .failed(let message): return "Error: \(message)"
         }
+    }
+
+    /// The server is running and listening on all interfaces.
+    var isReachableFromNetwork: Bool {
+        guard case .running = serverStatus else { return false }
+        return httpServer?.listensOnNetwork == true
     }
 
     // MARK: - Lifecycle
@@ -133,10 +142,14 @@ final class AppModel: ObservableObject {
     private func configDidChange() {
         let previous = config
         config = configStore.config
+        let policy = config.accessPolicy
         if !config.mcpServerEnabled {
             stopServer()
-        } else if httpServer == nil || config.port != serverPort {
+        } else if httpServer == nil || config.port != serverPort || httpServer?.listensOnNetwork != policy.allowsNetworkClients {
             restartServer()
+        } else if policy != previous.accessPolicy {
+            mcp.httpHandler.accessPolicy = policy
+            httpServer?.accessPolicy = policy
         }
         if config.countdownCalendarIds != previous.countdownCalendarIds { refreshMeetings() }
         if config.syncDaysAhead != previous.syncDaysAhead && config.autoSyncEnabled { syncAfterRangeChange() }
@@ -206,7 +219,9 @@ final class AppModel: ObservableObject {
             return
         }
         let handler = mcp.httpHandler
-        let server = LocalHTTPServer(port: portNumber) { request in handler.handle(request) }
+        let policy = config.accessPolicy
+        handler.accessPolicy = policy
+        let server = LocalHTTPServer(port: portNumber, accessPolicy: policy) { request in handler.handle(request) }
         server.onStatusChange = { [weak self] status in
             Task { @MainActor in self?.serverStatus = status }
         }
@@ -217,6 +232,10 @@ final class AppModel: ObservableObject {
     func stopServer() {
         httpServer?.stop()
         httpServer = nil
+    }
+
+    func regenerateAPIKey() {
+        updateConfig { $0.apiKey = MCPAccessPolicy.generateAPIKey() }
     }
 
     func restartServer() {
