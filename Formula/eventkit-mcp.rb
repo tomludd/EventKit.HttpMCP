@@ -4,8 +4,8 @@
 class EventkitMcp < Formula
   desc "Menu bar app that exposes your macOS calendars as a local MCP server over HTTP"
   homepage "https://github.com/tomludd/EventKit.HttpMCP"
-  url "https://github.com/tomludd/EventKit.HttpMCP/archive/refs/tags/v1.1.1.tar.gz"
-  sha256 "fb9c04a0712819f6e769f8bb0b5735083dbeab20b454efb7c159d9cd1a4ba0a6"
+  url "https://github.com/tomludd/EventKit.HttpMCP/archive/refs/tags/v1.2.0.tar.gz"
+  sha256 "20d8e30e808d732f372f7340fb6ceb5c7d426824ee0c25537b31b4a2ad0086ae"
   head "https://github.com/tomludd/EventKit.HttpMCP.git", branch: "main"
 
   # SwiftUI macros need the full Xcode toolchain, not just the Command Line Tools.
