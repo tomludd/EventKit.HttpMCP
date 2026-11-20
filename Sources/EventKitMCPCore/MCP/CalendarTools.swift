@@ -373,7 +373,8 @@ public enum CalendarTools {
 
     private static func availability(_ args: ToolArguments) throws -> EventAvailability? {
         guard let value = args.string("availability") else { return nil }
-        guard let availability = EventAvailability(rawValue: value.lowercased()), availability != .notSupported else {
+        guard let availability = EventAvailability(rawValue: value.lowercased()),
+              availability != .notSupported, availability != .workingElsewhere else {
             throw ToolError("`availability` must be busy, free, tentative or unavailable.")
         }
         return availability
@@ -417,6 +418,8 @@ public enum CalendarTools {
         let blockEventName: String
         let blockEventLocation: String
         let blockAsOutOfOffice: Bool
+        let availabilities: [String]
+        let onlyResponded: Bool
         let marker: String
     }
 
@@ -451,6 +454,50 @@ public enum CalendarTools {
         let purgedEvents: Int?
     }
 
+    /// Applies the rule options of `run_sync` and `save_sync_rule` to `rule`.
+    static func applyRuleOptions(_ args: ToolArguments, to rule: inout SyncRule) throws {
+        if let mode = args.string("mode") {
+            guard let parsed = SyncMode(rawValue: mode.lowercased()) else { throw ToolError("`mode` must be block or copy.") }
+            rule.mode = parsed
+        }
+        // Older clients may still send outside_work_hours_only; hours_filter wins when both are set.
+        if let value = try args.bool("outside_work_hours_only") { rule.hoursFilter = value ? .outside : .any }
+        if let value = args.string("hours_filter") {
+            guard let parsed = HoursFilter(rawValue: value.lowercased()) else { throw ToolError("`hours_filter` must be any, outside or within.") }
+            rule.hoursFilter = parsed
+        }
+        if let names = args.stringArray("days") {
+            if names.count == 1, names[0].lowercased() == "all" {
+                rule.days = nil
+            } else {
+                let days = try names.map { name in
+                    guard let day = Weekday(name: name) else { throw ToolError("`days` must be mon, tue, wed, thu, fri, sat, sun or all.") }
+                    return day
+                }
+                rule.days = Set(days).count == Weekday.allCases.count ? nil : Set(days)
+            }
+        }
+        if let value = try args.int("work_day_start_hour") { rule.workDayStartHour = min(max(value, 0), 23) }
+        if let value = try args.int("work_day_end_hour") { rule.workDayEndHour = min(max(value, 1), 24) }
+        if let value = args.raw["block_event_name"]?.stringValue {
+            rule.blockEventName = value.trimmingCharacters(in: .whitespaces).isEmpty ? "Busy" : value
+        }
+        if let value = args.raw["block_event_location"]?.stringValue { rule.blockEventLocation = value }
+        if let value = try args.bool("block_as_out_of_office") { rule.blockAsOutOfOffice = value }
+        if let names = args.stringArray("availabilities") {
+            let selectable = SyncOptions.selectableAvailabilities
+            let values = try names.map { name in
+                guard let value = selectable.first(where: { $0.rawValue.lowercased() == name.trimmingCharacters(in: .whitespaces).lowercased() }) else {
+                    throw ToolError("`availabilities` must be busy, free, tentative, unavailable or workingElsewhere.")
+                }
+                return value
+            }
+            guard !values.isEmpty else { throw ToolError("`availabilities` needs at least one value.") }
+            rule.availabilities = Set(values)
+        }
+        if let value = try args.bool("only_responded") { rule.onlyResponded = value }
+    }
+
     private static func registerSync(
         _ server: MCPServer, _ store: EventKitCalendarStore, _ sync: SyncCoordinator, _ config: ConfigStore, _ scope: @escaping Scope
     ) {
@@ -470,6 +517,8 @@ public enum CalendarTools {
                 blockEventName: rule.blockEventName,
                 blockEventLocation: rule.blockEventLocation,
                 blockAsOutOfOffice: rule.blockAsOutOfOffice,
+                availabilities: SyncOptions.selectableAvailabilities.filter(rule.availabilities.contains).map(\.rawValue),
+                onlyResponded: rule.onlyResponded,
                 marker: rule.marker
             )
         }
@@ -522,39 +571,10 @@ public enum CalendarTools {
             "work_day_end_hour": integer("End hour used by hours_filter. Default 18."),
             "block_event_name": string("Title of block events. Default 'Busy' (Out of Office events keep 'Out of Office')."),
             "block_event_location": string("Location of block events. Default none."),
+            "availabilities": stringArray("Which source events sync by how they are shown: busy, free, tentative, unavailable (Out of Office), workingElsewhere. Events in calendars without free/busy count as busy, or free when all-day. Default: busy and unavailable."),
+            "only_responded": boolean("Only sync events you have answered: accepted or tentatively accepted invitations, events you organize, and your own events without attendees. Unanswered invitations, including those sent to a group you are in, are skipped. Default false (all events except declined)."),
             "block_as_out_of_office": boolean("Show block events as Out of Office instead of Busy, e.g. personal appointments blocked in a work calendar. Calendars without Out of Office (such as Google) keep Busy. Default false."),
         ]
-
-        func applyOptions(_ args: ToolArguments, to rule: inout SyncRule) throws {
-            if let mode = args.string("mode") {
-                guard let parsed = SyncMode(rawValue: mode.lowercased()) else { throw ToolError("`mode` must be block or copy.") }
-                rule.mode = parsed
-            }
-            // Older clients may still send outside_work_hours_only; hours_filter wins when both are set.
-            if let value = try args.bool("outside_work_hours_only") { rule.hoursFilter = value ? .outside : .any }
-            if let value = args.string("hours_filter") {
-                guard let parsed = HoursFilter(rawValue: value.lowercased()) else { throw ToolError("`hours_filter` must be any, outside or within.") }
-                rule.hoursFilter = parsed
-            }
-            if let names = args.stringArray("days") {
-                if names.count == 1, names[0].lowercased() == "all" {
-                    rule.days = nil
-                } else {
-                    let days = try names.map { name in
-                        guard let day = Weekday(name: name) else { throw ToolError("`days` must be mon, tue, wed, thu, fri, sat, sun or all.") }
-                        return day
-                    }
-                    rule.days = Set(days).count == Weekday.allCases.count ? nil : Set(days)
-                }
-            }
-            if let value = try args.int("work_day_start_hour") { rule.workDayStartHour = min(max(value, 0), 23) }
-            if let value = try args.int("work_day_end_hour") { rule.workDayEndHour = min(max(value, 1), 24) }
-            if let value = args.raw["block_event_name"]?.stringValue {
-                rule.blockEventName = value.trimmingCharacters(in: .whitespaces).isEmpty ? "Busy" : value
-            }
-            if let value = args.raw["block_event_location"]?.stringValue { rule.blockEventLocation = value }
-            if let value = try args.bool("block_as_out_of_office") { rule.blockAsOutOfOffice = value }
-        }
 
         func applyCalendars(_ args: ToolArguments, to rule: inout SyncRule) throws {
             if let source = args.string("source_calendar") {
@@ -614,7 +634,7 @@ public enum CalendarTools {
             } else if args.has("source_calendar") || args.has("target_calendar") {
                 var rule = SyncRule()
                 try applyCalendars(args, to: &rule)
-                try applyOptions(args, to: &rule)
+                try applyRuleOptions(args, to: &rule)
                 results = [sync.runAdHoc(rule, from: from, to: to)]
             } else {
                 results = sync.run(ruleIds: visibleRules().filter(\.enabled).map(\.id), from: from, to: to)
@@ -637,7 +657,7 @@ public enum CalendarTools {
             let previous = try args.string("id").map(findRule)
             var rule = previous ?? SyncRule()
             try applyCalendars(args, to: &rule)
-            try applyOptions(args, to: &rule)
+            try applyRuleOptions(args, to: &rule)
             if let enabled = try args.bool("enabled") { rule.enabled = enabled }
             let saved = rule
             config.update { config in

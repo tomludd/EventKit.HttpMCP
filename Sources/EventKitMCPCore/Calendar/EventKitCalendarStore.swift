@@ -355,6 +355,7 @@ public final class EventKitCalendarStore: CalendarBackend, @unchecked Sendable {
                     availability: Self.availability(event.availability),
                     status: Self.status(event.status),
                     myParticipation: Self.myParticipation(event),
+                    isInvitation: Self.isInvitation(event),
                     timeZone: event.timeZone
                 )
             }
@@ -527,6 +528,11 @@ public final class EventKitCalendarStore: CalendarBackend, @unchecked Sendable {
         return nil
     }
 
+    /// Someone else's meeting the user is invited to, directly or through a group.
+    static func isInvitation(_ event: EKEvent) -> Bool {
+        event.hasAttendees && event.organizer?.isCurrentUser != true
+    }
+
     static func participant(_ participant: EKParticipant) -> ParticipantInfo {
         let url = participant.url.absoluteString
         let email = url.lowercased().hasPrefix("mailto:") ? String(url.dropFirst("mailto:".count)) : nil
@@ -575,7 +581,8 @@ public final class EventKitCalendarStore: CalendarBackend, @unchecked Sendable {
         case .free: return .free
         case .tentative: return .tentative
         case .unavailable: return .unavailable
-        default: return .notSupported
+        // Exchange's "Working elsewhere" (its free/busy value 4), passed through without an EventKit constant.
+        default: return availability.rawValue == 4 ? .workingElsewhere : .notSupported
         }
     }
 
@@ -585,6 +592,8 @@ public final class EventKitCalendarStore: CalendarBackend, @unchecked Sendable {
         case .free: return .free
         case .tentative: return .tentative
         case .unavailable: return .unavailable
+        // EventKit cannot set Working elsewhere; Busy is the closest it can.
+        case .workingElsewhere: return .busy
         case .notSupported: return .notSupported
         }
     }

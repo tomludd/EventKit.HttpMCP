@@ -19,12 +19,17 @@ public struct SyncRule: Codable, Sendable, Equatable, Identifiable {
     public var blockEventLocation: String
     /// Block events show as Out of Office instead of Busy.
     public var blockAsOutOfOffice: Bool
+    /// Source events sync only when shown as one of these (busy, free, tentative, Out of Office, working elsewhere).
+    public var availabilities: Set<EventAvailability>
+    /// Only events the user has answered (or organizes, or has without attendees) sync.
+    public var onlyResponded: Bool
 
     public init(
         id: UUID = UUID(), enabled: Bool = true, source: CalendarReference = CalendarReference(id: ""),
         target: CalendarReference = CalendarReference(id: ""), markerKey: String? = nil, mode: SyncMode = .block,
         hoursFilter: HoursFilter = .any, days: Set<Weekday>? = nil, workDayStartHour: Int = 7, workDayEndHour: Int = 18,
-        blockEventName: String = "Busy", blockEventLocation: String = "", blockAsOutOfOffice: Bool = false
+        blockEventName: String = "Busy", blockEventLocation: String = "", blockAsOutOfOffice: Bool = false,
+        availabilities: Set<EventAvailability> = SyncOptions.defaultAvailabilities, onlyResponded: Bool = false
     ) {
         self.id = id
         self.enabled = enabled
@@ -39,11 +44,13 @@ public struct SyncRule: Codable, Sendable, Equatable, Identifiable {
         self.blockEventName = blockEventName
         self.blockEventLocation = blockEventLocation
         self.blockAsOutOfOffice = blockAsOutOfOffice
+        self.availabilities = availabilities
+        self.onlyResponded = onlyResponded
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, enabled, source, target, markerKey, mode, hoursFilter, days, workDayStartHour, workDayEndHour
-        case blockEventName, blockEventLocation, blockAsOutOfOffice
+        case blockEventName, blockEventLocation, blockAsOutOfOffice, availabilities, onlyResponded
     }
 
     /// Keys of configs written before calendars were stored with their title and account, and before
@@ -76,6 +83,10 @@ public struct SyncRule: Codable, Sendable, Equatable, Identifiable {
         blockEventName = try c.decodeIfPresent(String.self, forKey: .blockEventName) ?? defaults.blockEventName
         blockEventLocation = try c.decodeIfPresent(String.self, forKey: .blockEventLocation) ?? defaults.blockEventLocation
         blockAsOutOfOffice = try c.decodeIfPresent(Bool.self, forKey: .blockAsOutOfOffice) ?? defaults.blockAsOutOfOffice
+        // Read as strings so a value from a newer version is dropped instead of failing the whole config.
+        availabilities = try c.decodeIfPresent([String].self, forKey: .availabilities)
+            .map { Set($0.compactMap(EventAvailability.init(rawValue:))) } ?? defaults.availabilities
+        onlyResponded = try c.decodeIfPresent(Bool.self, forKey: .onlyResponded) ?? defaults.onlyResponded
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -93,6 +104,8 @@ public struct SyncRule: Codable, Sendable, Equatable, Identifiable {
         try c.encode(blockEventName, forKey: .blockEventName)
         try c.encode(blockEventLocation, forKey: .blockEventLocation)
         try c.encode(blockAsOutOfOffice, forKey: .blockAsOutOfOffice)
+        try c.encode(SyncOptions.selectableAvailabilities.filter(availabilities.contains), forKey: .availabilities)
+        try c.encode(onlyResponded, forKey: .onlyResponded)
         // Read by versions before `hoursFilter`, so "outside" rules survive a downgrade.
         var legacy = encoder.container(keyedBy: LegacyKeys.self)
         try legacy.encode(hoursFilter == .outside, forKey: .outsideWorkHoursOnly)
@@ -110,7 +123,9 @@ public struct SyncRule: Codable, Sendable, Equatable, Identifiable {
             workDayEndHour: workDayEndHour,
             blockEventName: blockEventName,
             blockEventLocation: blockEventLocation,
-            blockAsOutOfOffice: blockAsOutOfOffice
+            blockAsOutOfOffice: blockAsOutOfOffice,
+            availabilities: availabilities,
+            onlyResponded: onlyResponded
         )
     }
 

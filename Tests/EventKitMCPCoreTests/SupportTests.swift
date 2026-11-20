@@ -1,3 +1,4 @@
+import EventKit
 import Foundation
 import Testing
 @testable import EventKitMCPCore
@@ -185,6 +186,50 @@ struct ConfigTests {
         #expect(Weekday(name: "Monday") == .mon && Weekday(number: 1) == .sun && Weekday.sat.number == 7)
     }
 
+    @Test func roundTripsRuleAvailabilities() throws {
+        let old = try JSONDecoder().decode(AppConfig.self, from: Data(#"{"syncRules": [{"sourceCalendarId": "a", "targetCalendarId": "b"}]}"#.utf8))
+        #expect(old.syncRules[0].availabilities == [.busy, .unavailable])
+        #expect(old.syncRules[0].onlyResponded == false)
+
+        let newer = #"{"syncRules": [{"sourceCalendarId": "a", "targetCalendarId": "b", "availabilities": ["free", "someday"]}]}"#
+        #expect(try JSONDecoder().decode(AppConfig.self, from: Data(newer.utf8)).syncRules[0].availabilities == [.free])
+
+        var config = AppConfig()
+        config.syncRules = [SyncRule(
+            source: CalendarReference(id: "a"), target: CalendarReference(id: "b"), availabilities: [.workingElsewhere, .free], onlyResponded: true
+        )]
+        let data = try JSONEncoder().encode(config)
+        #expect(try JSONDecoder().decode(AppConfig.self, from: data) == config)
+        let rules = try #require((try JSONSerialization.jsonObject(with: data) as? [String: Any])?["syncRules"] as? [[String: Any]])
+        #expect(rules[0]["availabilities"] as? [String] == ["free", "workingElsewhere"])
+        #expect(rules[0]["onlyResponded"] as? Bool == true)
+        #expect(config.syncRules[0].options.availabilities == [.free, .workingElsewhere])
+        #expect(config.syncRules[0].options.onlyResponded)
+    }
+
+    @Test func parsesRuleOptionsFromToolArguments() throws {
+        func apply(_ raw: [String: JSONValue], to rule: SyncRule = SyncRule()) throws -> SyncRule {
+            var rule = rule
+            try CalendarTools.applyRuleOptions(ToolArguments(raw), to: &rule)
+            return rule
+        }
+        #expect(try apply([:]).availabilities == [.busy, .unavailable])
+        #expect(try apply([:]).onlyResponded == false)
+        #expect(try apply(["availabilities": ["Free", " tentative", "workingElsewhere"]]).availabilities == [.free, .tentative, .workingElsewhere])
+        #expect(try apply(["availabilities": "busy,unavailable"]).availabilities == [.busy, .unavailable])
+        #expect(try apply(["only_responded": true]).onlyResponded)
+        // Leaving an option out keeps what the rule had.
+        let saved = SyncRule(availabilities: [.free], onlyResponded: true)
+        #expect(try apply(["mode": "copy"], to: saved).availabilities == [.free])
+        #expect(try apply(["mode": "copy"], to: saved).onlyResponded)
+        #expect(try apply(["only_responded": false], to: saved).onlyResponded == false)
+
+        #expect(throws: ToolError.self) { try apply(["availabilities": ["maybe"]]) }
+        #expect(throws: ToolError.self) { try apply(["availabilities": ["notSupported"]]) }
+        // An empty list is ignored rather than leaving the rule with nothing to sync.
+        #expect(try apply(["availabilities": .array([])], to: saved).availabilities == [.free])
+    }
+
     @Test func roundTripsMCPOptions() throws {
         var config = AppConfig()
         config.mcpServerEnabled = false
@@ -204,5 +249,14 @@ struct ConfigTests {
         #expect(SyncCoordinator.nextRun(after: at(10, 0), calendar: calendar) == at(10, 12))
         #expect(SyncCoordinator.nextRun(after: at(10, 12), calendar: calendar) == at(10, 27))
         #expect(SyncCoordinator.nextRun(after: at(10, 58), calendar: calendar) == at(11, 12))
+    }
+}
+
+struct AvailabilityMappingTests {
+    @Test func readsWorkingElsewhereButWritesBusy() throws {
+        #expect(EventKitCalendarStore.availability(try #require(EKEventAvailability(rawValue: 4))) == .workingElsewhere)
+        #expect(EventKitCalendarStore.availability(try #require(EKEventAvailability(rawValue: 9))) == .notSupported)
+        #expect(EventKitCalendarStore.availability(.unavailable) == .unavailable)
+        #expect(EventKitCalendarStore.ekAvailability(.workingElsewhere) == .busy)
     }
 }

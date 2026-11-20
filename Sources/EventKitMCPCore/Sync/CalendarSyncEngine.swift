@@ -49,12 +49,25 @@ public struct SyncOptions: Sendable, Equatable {
     public var blockEventLocation: String?
     /// Block events show as Out of Office instead of Busy, where the target calendar supports it.
     public var blockAsOutOfOffice: Bool
+    /// Source events sync only when shown as one of these. `notSupported` is never in it: such events count
+    /// as busy when timed and free when all-day.
+    public var availabilities: Set<EventAvailability>
+    /// Skip invitations the user has not accepted or tentatively accepted.
+    public var onlyResponded: Bool
+
+    /// What rules synced before the choice existed.
+    public static let defaultAvailabilities: Set<EventAvailability> = [.busy, .unavailable]
+    /// Availabilities a rule can choose, in the order they are shown.
+    public static let selectableAvailabilities: [EventAvailability] = [.busy, .free, .tentative, .unavailable, .workingElsewhere]
 
     public init(
         mode: SyncMode = .block, hoursFilter: HoursFilter = .any, days: Set<Weekday>? = nil, workDayStartHour: Int = 7,
         workDayEndHour: Int = 18, blockEventName: String = "Busy", blockEventLocation: String? = nil,
-        blockAsOutOfOffice: Bool = false
+        blockAsOutOfOffice: Bool = false, availabilities: Set<EventAvailability> = SyncOptions.defaultAvailabilities,
+        onlyResponded: Bool = false
     ) {
+        self.availabilities = availabilities
+        self.onlyResponded = onlyResponded
         self.mode = mode
         self.hoursFilter = hoursFilter
         self.days = days
@@ -150,7 +163,7 @@ public final class CalendarSyncEngine {
         var summary = SyncSummary()
 
         let sourceEvents = try backend.events(calendarId: sourceCalendarId, from: from, to: to)
-            .filter(shouldSync)
+            .filter { shouldSync($0, options) }
             .filter { matchesDays($0, options) && matchesHours($0, options) }
         // Events of ours beyond `to` have no source in the range, so the pass below deletes them.
         let targetEvents = try backend.events(calendarId: targetCalendarId, from: from, to: max(to, cleanUpUntil ?? to))
@@ -283,20 +296,18 @@ public final class CalendarSyncEngine {
 
     // MARK: - Filtering
 
-    func shouldSync(_ event: CalendarEventRecord) -> Bool {
+    func shouldSync(_ event: CalendarEventRecord, _ options: SyncOptions) -> Bool {
         if event.status == .canceled { return false }
         if event.myParticipation == .declined { return false }
         if SyncMarkers.isSynced(notes: event.notes) { return false }
+        if options.onlyResponded && !event.isResponded { return false }
 
-        switch event.availability {
-        case .busy, .unavailable:
-            return true
-        case .free, .tentative:
-            return false
-        case .notSupported:
+        var availability = event.availability
+        if availability == .notSupported {
             // Calendars without free/busy (e.g. "On My Mac"): timed events count as busy, all-day as free.
-            return !event.isAllDay
+            availability = event.isAllDay ? .free : .busy
         }
+        return options.availabilities.contains(availability)
     }
 
     /// Out of Office sources always block as Out of Office; others only when the rule asks for it and

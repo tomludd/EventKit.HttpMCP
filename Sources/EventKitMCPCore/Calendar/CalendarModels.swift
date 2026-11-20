@@ -1,7 +1,9 @@
 import Foundation
 
 public enum EventAvailability: String, Codable, Sendable, CaseIterable {
-    case busy, free, tentative, unavailable, notSupported
+    /// `unavailable` is Out of Office. `workingElsewhere` is Exchange's "Working elsewhere", which EventKit
+    /// has no constant for; it can be read but not written.
+    case busy, free, tentative, unavailable, workingElsewhere, notSupported
 }
 
 public enum EventStatus: String, Codable, Sendable {
@@ -38,13 +40,16 @@ public struct CalendarEventRecord: Sendable, Equatable {
     public var availability: EventAvailability
     public var status: EventStatus
     public var myParticipation: ParticipationStatus?
+    /// Someone else invited the user: the event has attendees and the user is not its organizer.
+    public var isInvitation: Bool
     /// The event's own timezone; nil for floating (e.g. all-day) events.
     public var timeZone: TimeZone?
 
     public init(
         id: String, calendarId: String, title: String, start: Date, end: Date, isAllDay: Bool = false,
         location: String? = nil, notes: String? = nil, availability: EventAvailability = .busy,
-        status: EventStatus = .none, myParticipation: ParticipationStatus? = nil, timeZone: TimeZone? = nil
+        status: EventStatus = .none, myParticipation: ParticipationStatus? = nil, isInvitation: Bool = false,
+        timeZone: TimeZone? = nil
     ) {
         self.id = id
         self.calendarId = calendarId
@@ -57,7 +62,15 @@ public struct CalendarEventRecord: Sendable, Equatable {
         self.availability = availability
         self.status = status
         self.myParticipation = myParticipation
+        self.isInvitation = isInvitation
         self.timeZone = timeZone
+    }
+
+    /// The user's own events and invitations they accepted or tentatively accepted. Invitations to a group
+    /// the user is in do not list the user, so they count as unanswered.
+    public var isResponded: Bool {
+        guard isInvitation else { return true }
+        return myParticipation == .accepted || myParticipation == .tentative
     }
 }
 

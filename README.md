@@ -114,10 +114,12 @@ Rules are set up in **Settings → Sync** (or via MCP). Each rule copies busy ti
 - **Copy**: copies title and notes, marked Free.
 - **Hours** (optional, default 07:00–18:00): sync only events *outside* the hours (e.g. evening work meetings into a personal calendar), or only events *between* them (e.g. personal appointments during the day into a work calendar). All-day and multi-day events pass both.
 - **Days**: optionally only events on the chosen days of the week, e.g. Monday–Friday. All-day and multi-day events sync if they cover one of them.
+- **Events shown as**: which source events sync by availability: Busy, Free, Tentative, Out of Office and Working Elsewhere. Default Busy and Out of Office. On calendars without free/busy support, timed events count as Busy and all-day events as Free. Working Elsewhere is read from Exchange; EventKit has no name for it.
+- **Only events I have responded to**: skips invitations you have not accepted or tentatively accepted, including invitations sent to a group you are in. Your own events and meetings you organize still sync.
 
 As in `outlook-cli`:
 
-- Events with availability Busy or Out of Office are synced. Free, tentative, declined and canceled events are skipped. On calendars without free/busy support, timed events count as busy.
+- Declined and canceled events are never synced.
 - Created events carry `[eventkit-sync:<mode>:<hash>]` in their notes and are **never re-synced**, so two-way rules (A→B and B→A) don't cascade. Events tagged by outlook-cli (`[outlook-sync:…]`) are skipped too.
 - Each run deletes blocks whose source disappeared or moved, refreshes stale titles/locations, and skips slots where the target already has an event at the same time. Out of Office blocks are added anyway, unless that event is Out of Office too.
 - Rules run automatically every hour at minutes **12, 27, 42 and 57**, for today + 90 days (configurable), and on **Sync Calendars Now**. **Purge** removes a rule's events.

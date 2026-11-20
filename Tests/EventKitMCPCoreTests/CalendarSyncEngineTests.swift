@@ -15,10 +15,11 @@ final class InMemoryBackend: CalendarBackend {
 
     @discardableResult
     func add(_ calendarId: String, _ title: String, _ start: Date, minutes: Int = 30, availability: EventAvailability = .busy,
-             notes: String? = nil, isAllDay: Bool = false, participation: ParticipationStatus? = nil) -> CalendarEventRecord {
+             notes: String? = nil, isAllDay: Bool = false, participation: ParticipationStatus? = nil,
+             isInvitation: Bool = false) -> CalendarEventRecord {
         let event = CalendarEventRecord(
             id: "e\(nextId)", calendarId: calendarId, title: title, start: start, end: start.addingTimeInterval(TimeInterval(minutes * 60)),
-            isAllDay: isAllDay, notes: notes, availability: availability, myParticipation: participation
+            isAllDay: isAllDay, notes: notes, availability: availability, myParticipation: participation, isInvitation: isInvitation
         )
         nextId += 1
         events.append(event)
@@ -349,6 +350,103 @@ struct CalendarSyncEngineTests {
         let second = try run(backend, SyncOptions(mode: .copy))
         #expect(second.created == 0)
         #expect(second.skipped == 2)
+    }
+
+    @Test func syncsOnlyTheChosenAvailabilities() throws {
+        let backend = makeBackend()
+        backend.add("work", "Busy", at(16, 8))
+        backend.add("work", "Free", at(16, 9), availability: .free)
+        backend.add("work", "Tentative", at(16, 10), availability: .tentative)
+        backend.add("work", "Away", at(16, 11), availability: .unavailable)
+        backend.add("work", "Office B", at(16, 12), availability: .workingElsewhere)
+        backend.add("work", "Local timed", at(16, 13), availability: .notSupported)
+        backend.add("work", "Local all-day", at(17, 0), minutes: 1440, availability: .notSupported, isAllDay: true)
+
+        func copied(_ availabilities: Set<EventAvailability>) throws -> [String] {
+            backend.events.removeAll { $0.calendarId == "home" }
+            _ = try run(backend, SyncOptions(mode: .copy, availabilities: availabilities))
+            return backend.inCalendar("home").map(\.title)
+        }
+
+        #expect(try copied(SyncOptions.defaultAvailabilities) == ["Busy", "Away", "Local timed"])
+        #expect(try copied([.free, .tentative]) == ["Free", "Tentative", "Local all-day"])
+        #expect(try copied([.workingElsewhere]) == ["Office B"])
+    }
+
+    @Test func copiesAFreeAllDayEventWhenFreeIsChosen() throws {
+        let backend = makeBackend()
+        backend.add("work", "Kick-off", at(16, 0), minutes: 3 * 1440, availability: .free, isAllDay: true)
+        let options = SyncOptions(mode: .copy, hoursFilter: .outside, availabilities: [.busy, .free, .unavailable])
+        _ = try run(backend, options)
+
+        let copies = backend.inCalendar("home")
+        #expect(copies.map(\.title) == ["Kick-off"])
+        #expect(copies.first?.availability == .free)
+        #expect(copies.first?.isAllDay == true)
+
+        // Unchoosing Free removes the copy again.
+        let summary = try run(backend, SyncOptions(mode: .copy, hoursFilter: .outside))
+        #expect(summary.deleted == 1)
+        #expect(backend.inCalendar("home").isEmpty)
+    }
+
+    @Test func blocksFreeEventsAsBusyWhenChosen() throws {
+        let backend = makeBackend()
+        backend.add("work", "Optional", at(16, 9), availability: .tentative)
+        _ = try run(backend, SyncOptions(availabilities: [.tentative]))
+        #expect(backend.inCalendar("home").map(\.availability) == [.busy])
+    }
+
+    @Test func onlyRespondedSkipsUnansweredInvitations() throws {
+        let backend = makeBackend()
+        backend.add("work", "Own appointment", at(16, 8))
+        backend.add("work", "I organize", at(16, 9), participation: .accepted)
+        backend.add("work", "Accepted", at(16, 10), participation: .accepted, isInvitation: true)
+        backend.add("work", "Maybe", at(16, 11), participation: .tentative, isInvitation: true)
+        backend.add("work", "Not answered", at(16, 12), participation: .pending, isInvitation: true)
+        backend.add("work", "Unknown answer", at(16, 13), participation: .unknown, isInvitation: true)
+        backend.add("work", "Group invite", at(16, 14), isInvitation: true)
+        backend.add("work", "Declined", at(16, 15), participation: .declined, isInvitation: true)
+
+        func blocked(onlyResponded: Bool) throws -> [Date] {
+            backend.events.removeAll { $0.calendarId == "home" }
+            _ = try run(backend, SyncOptions(onlyResponded: onlyResponded))
+            return backend.inCalendar("home").map(\.start)
+        }
+
+        // All events: everything but the declined invitation.
+        #expect(try blocked(onlyResponded: false) == [8, 9, 10, 11, 12, 13, 14].map { at(16, $0) })
+        #expect(try blocked(onlyResponded: true) == [8, 9, 10, 11].map { at(16, $0) })
+    }
+
+    @Test func onlyRespondedWorksWithTheChosenAvailabilities() throws {
+        // A free, all-day kick-off sent to an employee group: copied with Free chosen, unless only answered
+        // invitations sync.
+        let backend = makeBackend()
+        backend.add("work", "Kick-off", at(16, 0), minutes: 3 * 1440, availability: .free, isAllDay: true, isInvitation: true)
+        backend.add("work", "Workshop", at(20, 9), availability: .tentative, participation: .tentative, isInvitation: true)
+        let all: Set<EventAvailability> = [.busy, .free, .tentative, .unavailable]
+
+        _ = try run(backend, SyncOptions(mode: .copy, availabilities: all))
+        #expect(backend.inCalendar("home").map(\.title) == ["Kick-off", "Workshop"])
+
+        let summary = try run(backend, SyncOptions(mode: .copy, availabilities: all, onlyResponded: true))
+        #expect(summary.deleted == 1)
+        #expect(backend.inCalendar("home").map(\.title) == ["Workshop"])
+    }
+
+    @Test func respondedMeansOwnOrAnsweredEvents() {
+        func record(_ participation: ParticipationStatus?, invitation: Bool) -> CalendarEventRecord {
+            CalendarEventRecord(id: "x", calendarId: "c", title: "t", start: at(16, 9), end: at(16, 10),
+                                myParticipation: participation, isInvitation: invitation)
+        }
+        #expect(record(nil, invitation: false).isResponded)
+        #expect(record(.accepted, invitation: false).isResponded)
+        #expect(record(.accepted, invitation: true).isResponded)
+        #expect(record(.tentative, invitation: true).isResponded)
+        for participation: ParticipationStatus? in [nil, .pending, .unknown, .declined, .delegated, .inProcess] {
+            #expect(!record(participation, invitation: true).isResponded)
+        }
     }
 
     @Test func removesDuplicateBlocksForTheSameSlot() throws {

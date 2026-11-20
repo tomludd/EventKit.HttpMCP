@@ -346,6 +346,10 @@ private struct RuleRow: View {
         case .within: parts.append("only between \(hours)")
         }
         if let days = rule.days { parts.append("on \(Weekday.describe(days))") }
+        if rule.availabilities != SyncOptions.defaultAvailabilities {
+            parts.append("shown as \(EventAvailability.describe(rule.availabilities))")
+        }
+        if rule.onlyResponded { parts.append("only answered invitations") }
         return parts.joined(separator: " · ")
     }
 }
@@ -368,7 +372,7 @@ private struct RuleEditor: View {
             Text(isNew ? "New Sync Rule" : "Edit Sync Rule").font(.title3.bold())
             Form {
                 Toggle("Enabled", isOn: $rule.enabled)
-                CalendarMenuPicker(title: "Copy busy time from", calendars: model.calendars, reference: $rule.source)
+                CalendarMenuPicker(title: "Copy events from", calendars: model.calendars, reference: $rule.source)
                 CalendarMenuPicker(title: "Into calendar", calendars: model.calendars.filter(\.writable), reference: $rule.target)
                 Picker("Mode", selection: $rule.mode) {
                     Text("Block — anonymous busy events").tag(SyncMode.block)
@@ -382,6 +386,9 @@ private struct RuleEditor: View {
                     TextField("Block title", text: $rule.blockEventName, prompt: Text("Busy"))
                     TextField("Block location", text: $rule.blockEventLocation, prompt: Text("None"))
                 }
+                AvailabilityPicker(availabilities: $rule.availabilities)
+                Toggle("Only events I have responded to", isOn: $rule.onlyResponded)
+                    .help("Skips invitations you have not accepted or tentatively accepted, including ones sent to a group you are in. Your own events and meetings you organize still sync.")
                 WeekdayPicker(days: $rule.days)
                 Picker("Sync events", selection: $rule.hoursFilter) {
                     Text("At any time").tag(HoursFilter.any)
@@ -421,6 +428,7 @@ private struct RuleEditor: View {
         if rule.sourceCalendarId.isEmpty { return "Choose the calendar to copy busy time from." }
         if rule.targetCalendarId.isEmpty { return "Choose the calendar to create events in." }
         if rule.sourceCalendarId == rule.targetCalendarId { return "Source and target must be different calendars." }
+        if rule.availabilities.isEmpty { return "Choose at least one of Busy, Free, Tentative, Out of Office or Working Elsewhere." }
         if rule.days?.isEmpty == true { return "Choose at least one day." }
         if rule.hoursFilter != .any && rule.workDayEndHour <= rule.workDayStartHour { return "The hours must end after they start." }
         return nil
@@ -461,6 +469,46 @@ private struct CalendarMenuPicker: View {
 }
 
 /// One toggle button per day of the week, in the order the user's calendar starts its week.
+/// Which source events sync, by how they are shown (busy, free, ...).
+private struct AvailabilityPicker: View {
+    @Binding var availabilities: Set<EventAvailability>
+
+    var body: some View {
+        LabeledContent("Events shown as") {
+            HStack(spacing: 4) {
+                ForEach(SyncOptions.selectableAvailabilities, id: \.self) { availability in
+                    Toggle(availability.displayName, isOn: Binding(
+                        get: { availabilities.contains(availability) },
+                        set: { on in
+                            if on { availabilities.insert(availability) } else { availabilities.remove(availability) }
+                        }
+                    ))
+                    .toggleStyle(.button)
+                }
+            }
+        }
+    }
+}
+
+extension EventAvailability {
+    var displayName: String {
+        switch self {
+        case .busy: return "Busy"
+        case .free: return "Free"
+        case .tentative: return "Tentative"
+        case .unavailable: return "Out of Office"
+        case .workingElsewhere: return "Working Elsewhere"
+        case .notSupported: return "Not Supported"
+        }
+    }
+
+    /// "busy, free" in the order the picker shows them.
+    static func describe(_ availabilities: Set<EventAvailability>) -> String {
+        SyncOptions.selectableAvailabilities.filter(availabilities.contains).map { $0.displayName.lowercased() }
+            .joined(separator: ", ")
+    }
+}
+
 private struct WeekdayPicker: View {
     @Binding var days: Set<Weekday>?
 
